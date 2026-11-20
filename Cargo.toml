@@ -1,0 +1,20 @@
+[package]
+name = "ayefire-family-hub"
+version = "0.1.0"
+edition = "2021"
+description = "AyeFire Sovereign Family Care Hub — Small DeepSeek p/q Local Brain + Alex's zenUltraCooker + Print-to-Aye IPP PDF Form Assistant"
+
+[dependencies]
+anyhow = "1.0"
+axum = { version = "0.7", features = ["multipart"] }
+blake3 = "1.5"
+futures = "0.3"
+ipp-ngest = { path = "../../8bit-wraith/ipp-rs", features = ["server"] }
+oxidize-pdf = { path = "../oxidizePdf/oxidize-pdf-core", default-features = false, features = ["compression"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+uuid = { version = "1", features = ["v4"] }
+zen-cooker-core = { path = "../zenUltraCooker/crates/zen-cooker-core" }
