@@ -339,23 +339,21 @@ pub fn write_email_draft_eml(
     Ok(())
 }
 
-/// Analyze an incoming printed/uploaded PDF against the local family profile + DeepSeek `p/q`,
-/// draft all form fields, render the filled PDF via `oxidize-pdf`, and prepare the `.eml` draft.
-pub async fn process_incoming_pdf(
+/// Fast synchronous phase (< 100ms): extract PDF text, match local household profile,
+/// generate filled PDF via `oxidize-pdf`, and write the `.eml` email draft immediately so
+/// IPP printers (iPhone AirPrint / Mac / CUPS) receive instant `successful-ok`.
+pub fn process_incoming_pdf_fast(
     pdf_path: &Path,
     raw_title: &str,
     source_channel: &str,
     spool_dir: &Path,
     profile: &HouseholdFamilyProfile,
-    llm_endpoint: &str,
-    llm_model: &str,
-) -> anyhow::Result<PrintedFormJob> {
+) -> anyhow::Result<(PrintedFormJob, String)> {
     let bytes = fs::read(pdf_path)?;
     let blake3_hex = blake3::hash(&bytes).to_hex().to_string();
     let (page_count, extracted) = extract_pdf_text(pdf_path);
     let lower = extracted.to_ascii_lowercase();
 
-    // Detect matching family member (defaults to Victor for athletic/school forms or first member)
     let member = profile
         .members
         .iter()
@@ -382,34 +380,10 @@ pub async fn process_incoming_pdf(
     let needs_count = fields.iter().filter(|f| f.needs_human_confirm).count();
     let ready_count = fields.len().saturating_sub(needs_count);
 
-    // Ask local DeepSeek p/q (loopback-only!) for a warm 2-sentence plain-English family summary
-    let sys_prompt = "You are Aye, a calm, practical sovereign home assistant running locally on Hue & Alex's AyeFire. Never invent private facts; summarize clearly in 2 short sentences.";
-    let user_prompt = format!(
-        "A form titled '{}' ({} page(s)) was just printed to Aye for {}. {} of {} fields matched the local household profile and {} need quick human confirmation before signing/emailing to {}. Extracted excerpt:\n{}\nGive Hue or Alex a warm, 2-sentence heads-up listing what is ready and what needs a quick check.",
-        title,
-        page_count,
-        member.name,
-        ready_count,
-        fields.len(),
-        needs_count,
-        recipient_email,
-        truncate_chars(&extracted, 700)
+    let default_summary = format!(
+        "Got {} for {} ({} of {} fields pre-filled from your local family profile, {} waiting for your quick review & signature before emailing {}).",
+        title, member.name, ready_count, fields.len(), needs_count, recipient_email
     );
-    let aye_summary = match deepseek_pq::generate_local_reply(
-        llm_endpoint,
-        llm_model,
-        sys_prompt,
-        &user_prompt,
-        120,
-    )
-    .await
-    {
-        Ok(reply) if !reply.trim().is_empty() => reply,
-        _ => format!(
-            "Got {} for {} ({} of {} fields pre-filled from your local family profile, {} waiting for your quick review & signature before emailing {}).",
-            title, member.name, ready_count, fields.len(), needs_count, recipient_email
-        ),
-    };
 
     let id = format!(
         "form-{}-{}",
@@ -434,13 +408,62 @@ pub async fn process_incoming_pdf(
         recipient_email: recipient_email.clone(),
         email_subject: format!("Completed: {} ({})", title, member.name),
         fields,
-        aye_summary,
+        aye_summary: default_summary,
         status: "READY_FOR_REVIEW".to_string(),
     };
 
     render_filled_form_pdf(&job, &filled_pdf_path)?;
     write_email_draft_eml(&job, profile, &filled_pdf_path, &draft_eml_path)?;
 
+    Ok((job, extracted))
+}
+
+/// Optional async enrichment via local DeepSeek `p/q` (loopback-only).
+pub async fn summarize_form_with_deepseek(
+    job: &PrintedFormJob,
+    extracted_text: &str,
+    llm_endpoint: &str,
+    llm_model: &str,
+) -> Option<String> {
+    let needs_count = job.fields.iter().filter(|f| f.needs_human_confirm).count();
+    let ready_count = job.fields.len().saturating_sub(needs_count);
+    let sys_prompt = "You are Aye, a calm, practical sovereign home assistant running locally on Hue & Alex's AyeFire. Never invent private facts; summarize clearly in 2 short sentences.";
+    let user_prompt = format!(
+        "A form titled '{}' ({} page(s)) was just printed to Aye for {}. {} of {} fields matched the local household profile and {} need quick human confirmation before signing/emailing to {}. Extracted excerpt:\n{}\nGive Hue or Alex a warm, 2-sentence heads-up listing what is ready and what needs a quick check.",
+        job.title,
+        job.page_count,
+        job.matched_member,
+        ready_count,
+        job.fields.len(),
+        needs_count,
+        job.recipient_email,
+        truncate_chars(extracted_text, 700)
+    );
+    match deepseek_pq::generate_local_reply(llm_endpoint, llm_model, sys_prompt, &user_prompt, 120)
+        .await
+    {
+        Ok(reply) if !reply.trim().is_empty() => Some(reply),
+        _ => None,
+    }
+}
+
+/// Combined helper for interactive browser uploads.
+pub async fn process_incoming_pdf(
+    pdf_path: &Path,
+    raw_title: &str,
+    source_channel: &str,
+    spool_dir: &Path,
+    profile: &HouseholdFamilyProfile,
+    llm_endpoint: &str,
+    llm_model: &str,
+) -> anyhow::Result<PrintedFormJob> {
+    let (mut job, extracted) =
+        process_incoming_pdf_fast(pdf_path, raw_title, source_channel, spool_dir, profile)?;
+    if let Some(summary) =
+        summarize_form_with_deepseek(&job, &extracted, llm_endpoint, llm_model).await
+    {
+        job.aye_summary = summary;
+    }
     Ok(job)
 }
 

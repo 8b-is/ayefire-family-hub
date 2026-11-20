@@ -67,21 +67,13 @@ impl SimpleIppServiceHandler for AyeIppHandler {
             }
 
             let profile = state.profile.read().await.clone();
-            let job = pdf_forms::process_incoming_pdf(
+            let (job, extracted) = pdf_forms::process_incoming_pdf_fast(
                 &pdf_path,
                 &doc_title,
                 "IPP_NETWORK_PRINTER",
                 &state.spool_dir,
                 &profile,
-                &state.llm_endpoint,
-                &state.llm_model,
-            )
-            .await?;
-
-            let voice_line = format!(
-                "Aye received {} on the family printer. {}",
-                job.title, job.aye_summary
-            );
+            )?;
 
             {
                 let mut q = state.forms.write().await;
@@ -92,12 +84,35 @@ impl SimpleIppServiceHandler for AyeIppHandler {
             }
 
             println!(
-                "[IPP] Received print job '{}' -> id={} member={} recipient={}",
+                "[IPP] Received print job '{}' -> id={} member={} recipient={} (fast ACK)",
                 job.title, job.id, job.matched_member, job.recipient_email
             );
 
-            // Spawn non-blocking voice announcement respecting AyeOS Incognito mode
+            // Enrich with local DeepSeek p/q summary + voice prompt asynchronously so IPP ACK stays <150ms
+            let bg_state = state.clone();
+            let bg_job = job.clone();
             tokio::spawn(async move {
+                let final_summary = match pdf_forms::summarize_form_with_deepseek(
+                    &bg_job,
+                    &extracted,
+                    &bg_state.llm_endpoint,
+                    &bg_state.llm_model,
+                )
+                .await
+                {
+                    Some(s) => {
+                        let mut q = bg_state.forms.write().await;
+                        if let Some(item) = q.iter_mut().find(|j| j.id == bg_job.id) {
+                            item.aye_summary = s.clone();
+                        }
+                        s
+                    }
+                    None => bg_job.aye_summary.clone(),
+                };
+                let voice_line = format!(
+                    "Aye received {} on the family printer. {}",
+                    bg_job.title, final_summary
+                );
                 speak_if_not_incognito(&voice_line).await;
             });
 
