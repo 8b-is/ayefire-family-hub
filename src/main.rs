@@ -14,6 +14,7 @@ mod pdf_forms;
 mod phoenix_gateway;
 mod sanctuary_dns;
 mod sanctuary_library;
+mod tls_inspect;
 mod ui;
 
 use axum::{
@@ -1067,16 +1068,75 @@ async fn phoenix_proxy_stream_handler(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
+#[derive(Deserialize)]
+struct InspectPolicyPayload {
+    #[serde(default)]
+    inspect_enabled: Option<bool>,
+    #[serde(default)]
+    auto_phoenix_audio: Option<bool>,
+    #[serde(default)]
+    privacy_bypass_enabled: Option<bool>,
+    #[serde(default)]
+    sinkhole_connect_enabled: Option<bool>,
+    #[serde(default)]
+    phoenix_preset: Option<String>,
+    #[serde(default)]
+    phoenix_rate: Option<u32>,
+}
+
+async fn gateway_ca_cert_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/x-x509-ca-cert".to_string(),
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"ayefire-local-ca.crt\"".to_string(),
+            ),
+        ],
+        state.inspect.ca_cert_pem.clone(),
+    )
+}
+
+async fn gateway_inspect_get_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let st = state.inspect.status().await;
+    Json(serde_json::json!({ "ok": true, "inspect": st }))
+}
+
+async fn gateway_inspect_post_handler(
+    State(state): State<FamilySharedState>,
+    Json(req): Json<InspectPolicyPayload>,
+) -> impl IntoResponse {
+    let _ = state
+        .inspect
+        .update_policy(
+            req.inspect_enabled,
+            req.auto_phoenix_audio,
+            req.privacy_bypass_enabled,
+            req.sinkhole_connect_enabled,
+            req.phoenix_preset,
+            req.phoenix_rate,
+        )
+        .await;
+    let st = state.inspect.status().await;
+    Json(serde_json::json!({ "ok": true, "inspect": st }))
+}
+
 async fn gateway_status_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
     let hw = gateway_status::inspect_gateway_hardware();
     let edge = state.edge_cache.status().await;
     let phx = state.phoenix.status().await;
+    let insp = state.inspect.status().await;
     let dns_cache_entries = state.dns.cache_len().await;
 
     Json(serde_json::json!({
         "ok": true,
         "schema": "ayefire_gateway_v1",
         "hardware": hw,
+        "inspect": insp,
         "dns": {
             "port": state.dns.port,
             "lan_ipv4": state.dns.lan_ipv4.to_string(),
@@ -1232,6 +1292,7 @@ async fn main() -> anyhow::Result<()> {
     let dns = sanctuary_dns::SanctuaryDnsConfig::from_env(lib_st.total_docs, merkle_short);
     let phoenix = phoenix_gateway::PhoenixGateway::load_from_env();
     let edge_cache = edge_cache::EdgeCache::load_from_env();
+    let inspect = tls_inspect::TlsInspectState::load_or_create_from_env()?;
 
     let state = FamilySharedState {
         spool_dir,
@@ -1246,8 +1307,9 @@ async fn main() -> anyhow::Result<()> {
         ipp_jobs_received: Arc::new(RwLock::new(0)),
         library,
         dns: dns.clone(),
-        phoenix,
+        phoenix: phoenix.clone(),
         edge_cache: edge_cache.clone(),
+        inspect: inspect.clone(),
         http_port,
     };
 
@@ -1259,10 +1321,12 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Spawn LAN BLAKE3 HTTP Pull-Through Cache + Zero-MITM CONNECT Proxy (:8792)
+    // Spawn LAN BLAKE3 HTTP Pull-Through Cache + Tier-1/Tier-3 HTTPS Inspect Proxy (:8792)
     let proxy_cache = edge_cache.clone();
+    let proxy_inspect = inspect.clone();
+    let proxy_phoenix = phoenix.clone();
     tokio::spawn(async move {
-        if let Err(e) = edge_cache::spawn_http_cache_proxy(proxy_cache).await {
+        if let Err(e) = edge_cache::spawn_http_cache_proxy(proxy_cache, proxy_inspect, proxy_phoenix).await {
             eprintln!("[EDGE-PROXY] proxy exited: {e}");
         }
     });
@@ -1313,6 +1377,11 @@ async fn main() -> anyhow::Result<()> {
         // WPAD LAN Proxy Auto-Config + AyeFire Live Gateway + BLAKE3 Edge Cache
         .route("/wpad.dat", get(wpad_handler))
         .route("/api/gateway/status", get(gateway_status_handler))
+        .route("/api/gateway/ca.crt", get(gateway_ca_cert_handler))
+        .route(
+            "/api/gateway/inspect",
+            get(gateway_inspect_get_handler).post(gateway_inspect_post_handler),
+        )
         .route("/api/cache/fetch", get(edge_cache_fetch_handler))
         .route("/api/cache/warm", post(edge_cache_warm_handler))
         .route("/api/cache/objects", get(edge_cache_objects_handler))

@@ -9,13 +9,20 @@ anyhow = "1.0"
 axum = { version = "0.7", features = ["multipart"] }
 blake3 = "1.5"
 futures = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 ipp-ngest = { path = "../../8bit-wraith/ipp-rs", features = ["server"] }
 oxidize-pdf = { path = "../oxidizePdf/oxidize-pdf-core", default-features = false, features = ["compression"] }
 phoenix-core = { path = "../phoenix-protocol/crates/phoenix-core", features = ["std"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rcgen = "0.14"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 uuid = { version = "1", features = ["v4"] }
 zen-cooker-core = { path = "../zenUltraCooker/crates/zen-cooker-core" }

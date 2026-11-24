@@ -348,6 +348,30 @@ input[type="text"],input[type="email"],textarea{
           </div>
 
           <article class="card">
+            <h2>
+              <span>Tier 3 Opt-In Hardware-Local HTTPS Inspect (Firefox Proxy :8792)</span>
+              <span class="pill gold" id="insp-state-pill">CHECKING…</span>
+            </h2>
+            <div class="row-item ok" id="insp-summary-box">
+              <strong>Hardware-Local ECDSA P-256 CA (Strictly on this machine · Never OS-wide · Instant Incognito Toggle)</strong>
+              <span class="muted" id="insp-ca-meta">Loading CA fingerprint &amp; Firefox trust status…</span>
+            </div>
+            <div class="kpi-row">
+              <div class="kpi"><span>HTTPS Inspected</span><strong class="cyan" id="insp-reqs">0</strong></div>
+              <div class="kpi"><span>HTTPS Cache Hits (p/q)</span><strong class="ok" id="insp-pq">0/1</strong></div>
+              <div class="kpi"><span>HTTPS Audio → Phoenix</span><strong class="gold" id="insp-phx">0</strong></div>
+              <div class="kpi"><span>Trackers Blocked</span><strong class="mint" id="insp-blk">0</strong></div>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="act primary" id="btn-insp-toggle">Toggle Tier-3 HTTPS Inspect</button>
+              <button type="button" class="act" id="btn-insp-phoenix">Toggle Auto-Phoenix HTTPS Audio</button>
+              <button type="button" class="act" id="btn-insp-privacy">Toggle Banking/Auth Privacy Bypass</button>
+              <a class="btn" href="/api/gateway/ca.crt">Download Local CA (.crt)</a>
+            </div>
+            <div class="list" id="insp-recent-list"></div>
+          </article>
+
+          <article class="card">
             <h2><span>Retiring the UniFi Dream Machine (Zero-Renumbering Cutover Kit)</span><span class="pill ok">INSTANT ROLLBACK</span></h2>
             <div class="row-item ok">
               <strong>1. Staged Parallel Test (Live Right Now — UDM Untouched)</strong>
@@ -1016,8 +1040,47 @@ input[type="text"],input[type="email"],textarea{
         '<div class="row-item '+(ev.status==="HIT"?"ok":"")+'"><strong>['+esc(ev.status)+'] '+esc(ev.host)+' · '+fmtKiB(ev.size_bytes)+'</strong>'+
         '<span class="muted">BLAKE3 '+esc(ev.blake3_short)+'… · '+esc(ev.content_type)+' · '+esc(ev.url_preview)+'</span></div>'
       ).join("");
+
+      renderInspectStatus(d.inspect||{});
     }catch(_e){}
   }
+
+  let currentInspect={inspect_enabled:false,auto_phoenix_audio:true,privacy_bypass_enabled:true};
+  function renderInspectStatus(insp){
+    currentInspect=insp;
+    const pill=document.getElementById("insp-state-pill");
+    pill.textContent=insp.inspect_enabled?"TIER 3 ACTIVE (LOCAL CA)":"TIER 1 ZERO-MITM (OFF)";
+    pill.className="pill "+(insp.inspect_enabled?"ok":"gold");
+    document.getElementById("insp-ca-meta").textContent=
+      (insp.ca_common_name||"Local CA")+" · BLAKE3 "+(insp.ca_blake3_fingerprint||"").slice(0,16)+"… · Firefox cert9.db: "+(insp.firefox_cert_installed?"TRUSTED ✓":"NOT IMPORTED YET")+" · Leaf certs cached: "+String(insp.leaf_certs_cached||0)+" · Privacy bypasses: "+String(insp.https_privacy_bypassed||0);
+    document.getElementById("insp-reqs").textContent=String(insp.https_requests_inspected||0)+" ("+String(insp.https_tunnels_inspected||0)+" TLS)";
+    document.getElementById("insp-pq").textContent=String(insp.https_cache_hits||0)+" ("+String(insp.https_hit_ratio_pq||"0/1")+")";
+    document.getElementById("insp-phx").textContent=String(insp.https_phoenix_restored||0);
+    document.getElementById("insp-blk").textContent=String(insp.connect_blocked||0);
+    document.getElementById("btn-insp-toggle").textContent=insp.inspect_enabled
+      ?"Tier-3 Inspect: ON (Click for Incognito / Zero-MITM)"
+      :"Tier-3 Inspect: OFF (Click to Enable for Firefox)";
+    document.getElementById("btn-insp-phoenix").textContent="Auto-Phoenix HTTPS Audio: "+(insp.auto_phoenix_audio?"ON ✓":"OFF");
+    document.getElementById("btn-insp-privacy").textContent="Banking/Auth Bypass: "+(insp.privacy_bypass_enabled?"ON (Protected)":"OFF (Inspect All)");
+    const evs=insp.recent||[];
+    document.getElementById("insp-recent-list").innerHTML=evs.slice(0,10).map(ev=>{
+      const cls=(ev.action==="HTTPS-CACHE-HIT"||ev.action==="PHOENIX-LIVE"||ev.action==="PHOENIX-HIT")?"ok":(ev.action==="SINKHOLE-BLOCKED"?"warn":"");
+      return '<div class="row-item '+cls+'"><strong>['+esc(ev.action)+'] '+esc(ev.method)+' '+esc(ev.host)+esc(ev.path_preview)+' ('+String(ev.status)+')</strong>'+
+        '<span class="muted">'+esc(ev.content_type)+' · '+fmtKiB(ev.size_bytes)+'</span></div>';
+    }).join("");
+  }
+
+  async function patchInspect(patch){
+    try{
+      const r=await fetch("/api/gateway/inspect",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(patch)});
+      if(!r.ok)return;
+      const d=await r.json();
+      if(d.inspect)renderInspectStatus(d.inspect);
+    }catch(_e){}
+  }
+  document.getElementById("btn-insp-toggle").addEventListener("click",()=>patchInspect({inspect_enabled:!currentInspect.inspect_enabled}));
+  document.getElementById("btn-insp-phoenix").addEventListener("click",()=>patchInspect({auto_phoenix_audio:!currentInspect.auto_phoenix_audio}));
+  document.getElementById("btn-insp-privacy").addEventListener("click",()=>patchInspect({privacy_bypass_enabled:!currentInspect.privacy_bypass_enabled}));
 
   document.getElementById("btn-gw-warm").addEventListener("click",async()=>{
     const url=document.getElementById("gw-warm-url").value.trim();

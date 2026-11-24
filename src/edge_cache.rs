@@ -13,7 +13,9 @@
 //! - **Exact integer accounting**: Reduced `p/q` hit ratios, BLAKE3 integrity keys, C64-bounded
 //!   disk budget with deterministic oldest-first eviction.
 
-use crate::phoenix_gateway::format_reduced_pq;
+use crate::phoenix_gateway::{format_reduced_pq, PhoenixGateway};
+use crate::sanctuary_dns;
+use crate::tls_inspect::{is_privacy_sensitive_host, InspectEvent, TlsInspectState};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs;
@@ -38,6 +40,8 @@ pub struct CachedObjectMeta {
     pub url: String,
     pub host: String,
     pub content_type: String,
+    #[serde(default)]
+    pub content_encoding: Option<String>,
     pub content_blake3: String,
     pub size_bytes: u64,
     pub cached_unix_secs: u64,
@@ -174,6 +178,17 @@ impl EdgeCache {
         content_type: &str,
         body: &[u8],
     ) -> anyhow::Result<CachedObjectMeta> {
+        self.store_cached_with_encoding(key, url, content_type, None, body)
+    }
+
+    pub fn store_cached_with_encoding(
+        &self,
+        key: &str,
+        url: &str,
+        content_type: &str,
+        content_encoding: Option<&str>,
+        body: &[u8],
+    ) -> anyhow::Result<CachedObjectMeta> {
         if body.len() as u64 > MAX_SINGLE_OBJECT_BYTES {
             anyhow::bail!("object exceeds 256 MiB single-object edge cache limit");
         }
@@ -184,6 +199,7 @@ impl EdgeCache {
             url: url.to_string(),
             host,
             content_type: content_type.to_string(),
+            content_encoding: content_encoding.map(|s| s.to_string()),
             content_blake3,
             size_bytes: body.len() as u64,
             cached_unix_secs: crate::pdf_forms::now_unix_secs(),
@@ -413,12 +429,20 @@ impl EdgeCache {
 /// Spawn the LAN HTTP Pull-Through Cache Proxy (`0.0.0.0:8792`).
 ///
 /// - HTTP `GET http://...`: served from NVMe BLAKE3 cache when public & cacheable.
-/// - HTTPS `CONNECT host:port`: raw encrypted TCP passthrough (zero MITM, zero Root CA).
-pub async fn spawn_http_cache_proxy(cache: Arc<EdgeCache>) -> anyhow::Result<()> {
+/// - HTTPS `CONNECT host:port`:
+///   1. Telemetry/ad/UniFi sinkhole check (blocks trackers even without decryption).
+///   2. Tier 1 Zero-MITM encrypted passthrough (default, or when privacy-bypass matches).
+///   3. Tier 3 Opt-In Hardware-Local Inspect (when enabled by user: BLAKE3 HTTPS caching +
+///      live on-the-fly zero-float Phoenix Audio restoration for `audio/*` streams!).
+pub async fn spawn_http_cache_proxy(
+    cache: Arc<EdgeCache>,
+    inspect: Arc<TlsInspectState>,
+    phoenix: Arc<PhoenixGateway>,
+) -> anyhow::Result<()> {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), cache.proxy_port);
     let listener = TcpListener::bind(addr).await?;
     println!(
-        "[EDGE-PROXY] LAN HTTP Pull-Through Cache + Zero-MITM CONNECT listening on http://0.0.0.0:{}",
+        "[EDGE-PROXY] LAN Cache + Tier-1/Tier-3 HTTPS Proxy listening on http://0.0.0.0:{}",
         cache.proxy_port
     );
 
@@ -428,13 +452,20 @@ pub async fn spawn_http_cache_proxy(cache: Arc<EdgeCache>) -> anyhow::Result<()>
             Err(_) => continue,
         };
         let c = Arc::clone(&cache);
+        let i = Arc::clone(&inspect);
+        let p = Arc::clone(&phoenix);
         tokio::spawn(async move {
-            let _ = handle_proxy_conn(stream, c).await;
+            let _ = handle_proxy_conn(stream, c, i, p).await;
         });
     }
 }
 
-async fn handle_proxy_conn(stream: TcpStream, cache: Arc<EdgeCache>) -> anyhow::Result<()> {
+async fn handle_proxy_conn(
+    stream: TcpStream,
+    cache: Arc<EdgeCache>,
+    inspect: Arc<TlsInspectState>,
+    phoenix: Arc<PhoenixGateway>,
+) -> anyhow::Result<()> {
     let mut reader = BufReader::new(stream);
     let mut req_line = String::new();
     let n = reader.read_line(&mut req_line).await?;
@@ -480,6 +511,70 @@ async fn handle_proxy_conn(stream: TcpStream, cache: Arc<EdgeCache>) -> anyhow::
                 .await;
             return Ok(());
         };
+
+        // 1. Telemetry / Ad / Ubiquiti phone-home sinkhole (Zero-MITM hostname block!)
+        if inspect.sinkhole_connect_enabled.load(Ordering::Relaxed)
+            && sanctuary_dns::is_telemetry_sinkholed(&host.to_ascii_lowercase())
+        {
+            inspect.connect_blocked.fetch_add(1, Ordering::Relaxed);
+            inspect
+                .record_event(InspectEvent {
+                    host: host.clone(),
+                    method: "CONNECT".to_string(),
+                    path_preview: format!(":{port}"),
+                    status: 403,
+                    action: "SINKHOLE-BLOCKED".to_string(),
+                    content_type: "telemetry/blocked".to_string(),
+                    size_bytes: 0,
+                    unix_secs: crate::pdf_forms::now_unix_secs(),
+                })
+                .await;
+            let _ = client_stream
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nX-AyeFire-Block: Telemetry-Sinkhole\r\nConnection: close\r\n\r\n")
+                .await;
+            return Ok(());
+        }
+
+        // 2. Opt-In Tier 3 Hardware-Local HTTPS Inspection (when enabled by user)
+        let do_inspect = inspect.inspect_enabled.load(Ordering::Relaxed) && port == 443;
+        let privacy_bypass = inspect.privacy_bypass_enabled.load(Ordering::Relaxed)
+            && is_privacy_sensitive_host(&host);
+
+        if do_inspect && !privacy_bypass {
+            client_stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\nProxy-Agent: AyeFire-Tier3-Local-Inspect\r\n\r\n")
+                .await?;
+            let _ = crate::tls_inspect::serve_inspected_tls_tunnel(
+                client_stream,
+                host,
+                port,
+                inspect,
+                cache,
+                phoenix,
+            )
+            .await;
+            return Ok(());
+        }
+
+        if do_inspect && privacy_bypass {
+            inspect
+                .https_privacy_bypassed
+                .fetch_add(1, Ordering::Relaxed);
+            inspect
+                .record_event(InspectEvent {
+                    host: host.clone(),
+                    method: "CONNECT".to_string(),
+                    path_preview: format!(":{port}"),
+                    status: 200,
+                    action: "PRIVACY-BYPASS".to_string(),
+                    content_type: "tls/passthrough".to_string(),
+                    size_bytes: 0,
+                    unix_secs: crate::pdf_forms::now_unix_secs(),
+                })
+                .await;
+        }
+
+        // 3. Tier 1 Zero-MITM encrypted TCP passthrough
         let dest = format!("{host}:{port}");
         match TcpStream::connect(&dest).await {
             Ok(mut upstream) => {
