@@ -7,6 +7,7 @@
 //! and speaks a friendly confirmation aloud (unless Incognito is active).
 
 use crate::pdf_forms::{self, HouseholdFamilyProfile, PrintedFormJob};
+use crate::sanctuary_dns::SanctuaryDnsConfig;
 use crate::sanctuary_library::SanctuaryLibrary;
 use ipp_ngest::model::{PageOrientation, Resolution};
 use ipp_ngest::server::{serve_http, wrap_as_http_service};
@@ -39,6 +40,8 @@ pub struct FamilySharedState {
     pub wall_oven_working: Arc<RwLock<bool>>,
     pub ipp_jobs_received: Arc<RwLock<u64>>,
     pub library: Arc<SanctuaryLibrary>,
+    pub dns: SanctuaryDnsConfig,
+    pub http_port: u16,
 }
 
 struct AyeIppHandler {

@@ -9,14 +9,15 @@
 mod deepseek_pq;
 mod ipp_printer;
 mod pdf_forms;
+mod sanctuary_dns;
 mod sanctuary_library;
 mod ui;
 
 use axum::{
     extract::{Multipart, Path as AxumPath, Query, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
-    response::{Html, IntoResponse, Json, Response},
+    response::{Html, IntoResponse, Json, Redirect, Response},
     routing::{get, post},
     Router,
 };
@@ -153,8 +154,107 @@ fn build_kitchen_view(wall_oven_working: bool) -> KitchenSummaryView {
     }
 }
 
-async fn index_handler(State(state): State<FamilySharedState>) -> Html<String> {
-    Html(ui::render_family_hub_html(state.ipp_port))
+async fn index_handler(State(state): State<FamilySharedState>, headers: HeaderMap) -> Response {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    match host.as_str() {
+        "home.aye" | "sanctuary.aye" | "aye" => {
+            let st = state.library.status();
+            Html(ui::render_welcome_html(
+                &st,
+                state.http_port,
+                state.ipp_port,
+                state.dns.port,
+                &state.dns.lan_ipv4.to_string(),
+            ))
+            .into_response()
+        }
+        "music.aye" => Redirect::temporary(&format!("http://{}:8080/", state.dns.lan_ipv4))
+            .into_response(),
+        "kitchen.aye" => Redirect::temporary("/?tab=kitchen").into_response(),
+        "print.aye" => Redirect::temporary("/?tab=forms").into_response(),
+        "ask.aye" => Redirect::temporary("/?tab=brain").into_response(),
+        _ => Html(ui::render_family_hub_html(state.ipp_port)).into_response(),
+    }
+}
+
+async fn welcome_handler(State(state): State<FamilySharedState>) -> Html<String> {
+    let st = state.library.status();
+    Html(ui::render_welcome_html(
+        &st,
+        state.http_port,
+        state.ipp_port,
+        state.dns.port,
+        &state.dns.lan_ipv4.to_string(),
+    ))
+}
+
+async fn captive_portal_handler(State(state): State<FamilySharedState>) -> Response {
+    let port_suffix = if state.http_port == 80 {
+        String::new()
+    } else {
+        format!(":{}", state.http_port)
+    };
+    Redirect::temporary(&format!("http://home.aye{port_suffix}/welcome")).into_response()
+}
+
+#[derive(Deserialize)]
+struct CorpusQuery {
+    #[serde(default)]
+    collection: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn sanctuary_manifest_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let st = state.library.status();
+    let docs = state.library.all_summaries();
+    Json(serde_json::json!({
+        "ok": true,
+        "schema": "ayefire_sanctuary_manifest_v1",
+        "compatible_with": ["8a.is", "8b.is", "tai.is", "ayefire"],
+        "ethos": st.ethos,
+        "total_docs": st.total_docs,
+        "total_bytes": st.total_bytes,
+        "merkle_root_blake3": st.merkle_root_blake3,
+        "offline_only": st.offline_only,
+        "no_tracking": st.no_tracking,
+        "zero_float_enforced": st.zero_float_enforced,
+        "dns": {
+            "udp_port": state.dns.port,
+            "lan_ipv4": state.dns.lan_ipv4.to_string(),
+            "offline_portal": state.dns.offline_portal,
+            "queries_answered": state.dns.queries_answered.load(std::sync::atomic::Ordering::Relaxed),
+            "domains": ["home.aye", "library.aye", "learn.aye", "ask.aye", "music.aye", "kitchen.aye", "print.aye"]
+        },
+        "corpus_jsonl_url": "/api/sanctuary/corpus.jsonl",
+        "documents": docs
+    }))
+}
+
+async fn sanctuary_corpus_jsonl_handler(
+    State(state): State<FamilySharedState>,
+    Query(q): Query<CorpusQuery>,
+) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(500).clamp(1, 5000);
+    let body = state
+        .library
+        .export_corpus_jsonl(q.collection.as_deref(), limit);
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "application/x-ndjson; charset=utf-8".to_string(),
+        )],
+        body,
+    )
 }
 
 async fn family_status_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
@@ -745,6 +845,9 @@ async fn main() -> anyhow::Result<()> {
         &pq_status.merkle_root_blake3[..pq_status.merkle_root_blake3.len().min(16)]
     );
 
+    let merkle_short = &lib_st.merkle_root_blake3[..lib_st.merkle_root_blake3.len().min(16)];
+    let dns = sanctuary_dns::SanctuaryDnsConfig::from_env(lib_st.total_docs, merkle_short);
+
     let state = FamilySharedState {
         spool_dir,
         profile_path,
@@ -757,7 +860,17 @@ async fn main() -> anyhow::Result<()> {
         wall_oven_working: Arc::new(RwLock::new(false)),
         ipp_jobs_received: Arc::new(RwLock::new(0)),
         library,
+        dns: dns.clone(),
+        http_port,
     };
+
+    // Spawn pure-Rust Sovereign `.aye` DNS + offline captive-portal responder
+    let dns_cfg = dns.clone();
+    tokio::spawn(async move {
+        if let Err(e) = sanctuary_dns::spawn_dns_responder(dns_cfg).await {
+            eprintln!("[SANCTUARY-DNS] responder exited: {e}");
+        }
+    });
 
     // Spawn Hue's Print-to-Aye IPP listener (ipp-ngest)
     let ipp_state = state.clone();
@@ -788,8 +901,20 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(index_handler))
+        .route("/welcome", get(welcome_handler))
         .route("/library", get(index_handler))
         .route("/read/:id", get(library_reader_html_handler))
+        // OS Captive-Portal Probes (warmly land offline Wi-Fi guests in the Sanctuary!)
+        .route("/generate_204", get(captive_portal_handler))
+        .route("/gen_204", get(captive_portal_handler))
+        .route("/hotspot-detect.html", get(captive_portal_handler))
+        .route("/connecttest.txt", get(captive_portal_handler))
+        .route("/canonical.html", get(captive_portal_handler))
+        .route("/check_network_status.txt", get(captive_portal_handler))
+        .route("/ncsi.txt", get(captive_portal_handler))
+        // Public Commons (8a.is / 8b.is / tai.is) Manifest & JSONL Corpus API
+        .route("/api/sanctuary/manifest", get(sanctuary_manifest_handler))
+        .route("/api/sanctuary/corpus.jsonl", get(sanctuary_corpus_jsonl_handler))
         .route("/api/family/status", get(family_status_handler))
         .route("/api/library/status", get(library_status_handler))
         .route("/api/library/search", get(library_search_handler))

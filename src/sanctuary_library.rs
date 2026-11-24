@@ -398,6 +398,45 @@ impl SanctuaryLibrary {
         })
     }
 
+    pub fn all_summaries(&self) -> Vec<SanctuaryDocSummary> {
+        self.docs.iter().map(|d| d.summary.clone()).collect()
+    }
+
+    pub fn export_corpus_jsonl(&self, collection_filter: Option<&str>, limit: usize) -> String {
+        let capped = limit.clamp(1, 5000);
+        let mut out = String::new();
+        let mut count = 0usize;
+        for d in &self.docs {
+            if !matches_filters(d, collection_filter, None) {
+                continue;
+            }
+            let Some(full) = self.read_doc(d.summary.id) else {
+                continue;
+            };
+            let rec = serde_json::json!({
+                "id": full.doc.id,
+                "collection": full.doc.collection,
+                "topic": full.doc.topic,
+                "repo": full.doc.repo,
+                "rel_path": full.doc.rel_path,
+                "title": full.doc.title,
+                "byte_len": full.doc.byte_len,
+                "blake3": full.doc.blake3_short,
+                "truncated": full.truncated,
+                "content": full.content,
+            });
+            if let Ok(line) = serde_json::to_string(&rec) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+            count += 1;
+            if count >= capped {
+                break;
+            }
+        }
+        out
+    }
+
     pub fn read_allowlisted_pdf(&self, requested: &str) -> Option<(String, Vec<u8>)> {
         // Reject any path separator or traversal character first
         if requested.contains('/') || requested.contains('\\') || requested.contains("..") {

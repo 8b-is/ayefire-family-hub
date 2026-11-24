@@ -140,8 +140,9 @@ input[type="text"],input[type="email"],textarea{
       <span class="pill mint" id="hdr-pqm">🧠 DEEPSEEK p/q VERIFIED</span>
     </div>
     <nav class="nav-links" aria-label="AyeFire links">
+      <a class="pill mint" href="/welcome">Sanctuary Front Door</a>
       <a class="pill gold" href="http://127.0.0.1:8080/" target="_blank" rel="noopener">Phoenix Audio (:8080)</a>
-      <a class="pill" href="http://172.16.47.110/" target="_blank" rel="noopener">Bare-Metal AyeOS (172.16.47.110)</a>
+      <a class="pill" href="/api/sanctuary/manifest">8a/8b/tai Manifest</a>
       <a class="pill" href="/api/library/status">Library JSON</a>
       <a class="pill" href="/api/family/status">Status JSON</a>
     </nav>
@@ -710,6 +711,13 @@ input[type="text"],input[type="email"],textarea{
   document.getElementById("lib-query").addEventListener("keydown",(e)=>{if(e.key==="Enter")runLibrarySearch();});
   document.getElementById("lib-collection").addEventListener("change",runLibrarySearch);
 
+  // Honor ?tab=sanctuary|kitchen|forms|brain from Host routing & /welcome cards
+  const wantedTab=new URLSearchParams(window.location.search).get("tab");
+  if(wantedTab){
+    const target=document.getElementById("tab-"+wantedTab);
+    if(target)selectTab(target,false);
+  }
+
   loadAll();
   loadLibraryStatus().then(runLibrarySearch);
 })();
@@ -719,4 +727,151 @@ input[type="text"],input[type="email"],textarea{
 "##;
 
     template.replace("__IPP_PORT__", &ipp_port.to_string())
+}
+
+/// Calm, welcoming offline front door for `http://home.aye/welcome` & air-gap captive portal landings.
+/// Zero purple, zero XML, zero external CDNs, zero trackers.
+pub fn render_welcome_html(
+    st: &crate::sanctuary_library::SanctuaryStatus,
+    http_port: u16,
+    ipp_port: u16,
+    dns_port: u16,
+    lan_ip: &str,
+) -> String {
+    let port_suffix = if http_port == 80 {
+        String::new()
+    } else {
+        format!(":{http_port}")
+    };
+    let merkle_short = &st.merkle_root_blake3[..st.merkle_root_blake3.len().min(16)];
+    format!(
+        r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Welcome to AyeFire Sanctuary Internet — Education · Understanding · Love · Respect</title>
+<style>
+:root{{
+  --bg:#05060a;--panel:#0d101b;--elev:#131a2b;--bdr:#243146;--bdr-hi:#36506e;
+  --ink:#e9f1f7;--muted:#93a6bf;--mint:#4ecdc4;--cyan:#00f0ff;--ok:#2ecc71;--gold:#e8b05c;
+  color-scheme:dark;
+}}
+*{{box-sizing:border-box;}}
+body{{
+  margin:0;min-block-size:100dvh;background:var(--bg);color:var(--ink);
+  font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  line-height:1.55;padding:24px clamp(16px,4vw,40px) 56px;
+}}
+.wrap{{max-inline-size:1040px;margin-inline:auto;display:grid;gap:20px;}}
+header.hero{{
+  background:var(--elev);border:1px solid var(--mint);border-radius:14px;
+  padding:24px 26px;display:grid;gap:10px;
+}}
+.kicker{{font-size:0.82rem;letter-spacing:0.08em;text-transform:uppercase;color:var(--mint);font-weight:700;}}
+h1{{margin:0;font-size:clamp(1.4rem,1.2rem + 1.2vw,2rem);color:var(--cyan);line-height:1.25;}}
+.lead{{margin:0;color:var(--ink);max-inline-size:74ch;font-size:0.98rem;}}
+.pills{{display:flex;flex-wrap:wrap;gap:8px;padding-top:4px;}}
+.pill{{
+  display:inline-flex;align-items:center;padding:4px 11px;border-radius:999px;
+  border:1px solid var(--bdr-hi);background:var(--panel);font-size:0.78rem;color:var(--ink);
+}}
+.pill.ok{{border-color:var(--ok);color:var(--ok);}}
+.pill.mint{{border-color:var(--mint);color:var(--mint);}}
+.pill.gold{{border-color:var(--gold);color:var(--gold);}}
+.doors{{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr));gap:16px;}}
+a.door{{
+  text-decoration:none;color:var(--ink);background:var(--panel);
+  border:1px solid var(--bdr-hi);border-top:3px solid var(--mint);border-radius:12px;
+  padding:18px;display:grid;gap:8px;align-content:start;
+}}
+a.door:hover{{border-color:var(--cyan);background:var(--elev);}}
+a.door.gold{{border-top-color:var(--gold);}}
+a.door.ok{{border-top-color:var(--ok);}}
+.door strong{{font-size:1.05rem;color:var(--cyan);}}
+.door code{{font-size:0.8rem;color:var(--mint);}}
+.door p{{margin:0;font-size:0.86rem;color:var(--muted);}}
+section.pledge{{
+  background:var(--panel);border:1px solid var(--bdr);border-radius:12px;
+  padding:18px 22px;display:grid;gap:8px;
+}}
+section.pledge h2{{margin:0;font-size:1rem;color:var(--gold);}}
+section.pledge p{{margin:0;font-size:0.88rem;color:var(--muted);}}
+footer{{text-align:center;font-size:0.8rem;color:var(--muted);}}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header class="hero">
+    <div class="kicker">AyeFire Sovereign Sanctuary · Local Offline Internet</div>
+    <h1>Welcome Home — Education, Understanding, Love &amp; Respect</h1>
+    <p class="lead">
+      You are connected to a quiet, self-sufficient local internet that works even when unplugged from the outside world.
+      No ads, no algorithmic outrage, no surveillance, and no reading-history logs — just books, research, music, a local AI tutor, and family tools.
+    </p>
+    <div class="pills">
+      <span class="pill ok">● 100% OFFLINE READY</span>
+      <span class="pill mint">{docs} Indexed Manuscripts ({mib} MiB)</span>
+      <span class="pill gold">{pdfs} Offline PDFs</span>
+      <span class="pill">Sovereign .aye DNS :{dns_port} → {lan_ip}</span>
+      <span class="pill ok">BLAKE3 {merkle_short}…</span>
+    </div>
+  </header>
+
+  <section class="doors" aria-label="Sanctuary doors">
+    <a class="door" href="/?tab=sanctuary">
+      <strong>Sanctuary Library &amp; Learning Paths</strong>
+      <code>library.aye · learn.aye</code>
+      <p>Search {docs} local books, Ultralove Editions, Flyxion research papers, and PDFs with zero-float deterministic ranking.</p>
+    </a>
+    <a class="door ok" href="/?tab=sanctuary">
+      <strong>Ask Local Tutor (DeepSeek p/q)</strong>
+      <code>ask.aye</code>
+      <p>Loopback sovereign AI tutor grounded strictly in cited local passages — honest provenance, zero cloud egress.</p>
+    </a>
+    <a class="door gold" href="http://{lan_ip}:8080/" target="_blank" rel="noopener">
+      <strong>Phoenix Audio Listening Room</strong>
+      <code>music.aye · http://{lan_ip}:8080</code>
+      <p>Zero-float harmonic audio restoration and local listening room running right on this box.</p>
+    </a>
+    <a class="door" href="/?tab=kitchen">
+      <strong>Alex’s Kitchen (zenUltraCooker)</strong>
+      <code>kitchen.aye</code>
+      <p>Honest-time family meals, zero-waste pantry tracker, and working-appliance routing.</p>
+    </a>
+    <a class="door ok" href="/?tab=forms">
+      <strong>Print-to-Aye Family Assistant</strong>
+      <code>print.aye · IPP :{ipp_port}</code>
+      <p>Print any PDF from a phone or laptop on the LAN to fill forms locally with human sign-off.</p>
+    </a>
+    <a class="door gold" href="/api/sanctuary/manifest">
+      <strong>Public Commons Mirror API</strong>
+      <code>8a.is · 8b.is · tai.is</code>
+      <p>Compact JSON manifest &amp; JSONL corpus stream for mirroring this verified library to 8a.is, 8b.is, and tai.is.</p>
+    </a>
+  </section>
+
+  <section class="pledge">
+    <h2>The Six Pillars of Holding</h2>
+    <p>
+      <strong>Compassion · Understanding · Moderation · Love · Respect · Space.</strong>
+      Because love without space becomes control, understanding without respect becomes judgment, and curiosity belongs to everyone who enters the room.
+      Local endpoints: <code>http://home.aye{port_suffix}/welcome</code> · <code>http://library.aye{port_suffix}/</code> · <code>http://music.aye{port_suffix}/</code>.
+    </p>
+  </section>
+
+  <footer>AyeFire Sanctuary Internet · 8b-is Family · &#123;&lt;3,&lt;3,&lt;3&#125;+1</footer>
+</main>
+</body>
+</html>"##,
+        docs = st.total_docs,
+        mib = st.total_mib,
+        pdfs = st.pdfs.len(),
+        dns_port = dns_port,
+        lan_ip = lan_ip,
+        ipp_port = ipp_port,
+        port_suffix = port_suffix,
+        merkle_short = merkle_short,
+    )
 }
