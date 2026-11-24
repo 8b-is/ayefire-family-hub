@@ -1,44 +1,39 @@
-# AyeFire Sovereign Gateway — UniFi Dream Machine (UDM) Retirement Kit
+# AyeFire Sovereign Multi-VLAN Gateway — UDM-SE Retirement Kit
 
-This kit turns `8bsov` (or any dual-NIC Linux box) into your live home edge router, replacing the UniFi Dream Machine cleanly with **zero LAN IP renumbering** and **instant 1-command rollback**.
+Turns a dual-NIC Linux box (e.g., `8bsov` with `eno2` 2.5 GbE WAN + `eno1` 10 GbE LAN trunk) into your live home edge router — supporting **ISP WAN MAC cloning**, **full 802.1Q multi-VLAN DHCP + routing**, **camera/IoT zero-WAN isolation**, **transparent port-53 AyeFire DNS steering**, and **instant 1-command rollback**.
 
-## Physical Port Mapping (`8bsov`)
-- **`eno2` (Intel I226-V 2.5 GbE)** → **WAN** (plug directly into your ISP modem / ONT)
-- **`eno1` (Aquantia AQC113 10 GbE)** → **LAN** (plug into your home switch + separate UniFi Wi-Fi APs)
-- **`wg-i1`** → Sovereign `i1.is` WireGuard mesh overlay
+## Private Site Configuration (Never Committed to Public Git)
+Store your site-specific ISP cloned MAC address, VLAN gateway map, and static DHCP reservations in mode `0600` files outside the repo:
+- `~/.config/ayefire/site.env` (or `/etc/ayefire/site.env`)
+- `~/.config/ayefire/dhcp-site.conf` (or `/etc/ayefire/dhcp-site.conf`)
 
-## Why Your Separate UniFi APs Keep Working Immediately
-UniFi Access Points store their SSID, WPA2/WPA3 passphrase, and VLAN config in local flash and keep bridging Wi-Fi to Ethernet **even when the UDM is unplugged**.
-Because `ayefire-dnsmasq-dhcp.conf` takes over the exact gateway IP **`172.16.47.67/25`** (while preserving `172.16.47.118/25` as a secondary alias on `eno1`), every existing AP, switch, `s` (`.91`), `ayekvm` (`.103`), and device on `172.16.47.0/25` continues working with zero reconfiguration.
+Example `site.env`:
+```bash
+AYEFIRE_WAN_IF="eno2"
+AYEFIRE_WAN_CLONE_MAC="xx:xx:xx:xx:xx:xx"
+AYEFIRE_LAN_IF="eno1"
+AYEFIRE_LAN_GW_CIDR="172.16.47.67/25"
+AYEFIRE_LAN_ALIAS_CIDR="172.16.47.118/25"
+AYEFIRE_LAN_VLANS="1:192.168.1.254/24 43:192.168.43.1/24 255:192.168.255.254/25 363:192.168.253.254/24"
+```
 
-## Step-by-Step Cutover
-1. **Verify staged services right now (zero downtime, UDM untouched):**
+## Cutover Steps
+1. **Preflight & staged verification (UDM stays live):**
    ```bash
-   ./ayefire-gateway-ctl.sh stage
+   ayefire-gateway-ctl stage
    ```
-2. **Cut over to AyeFire:**
-   - Unplug ISP modem WAN cable from the UDM and plug it into `8bsov`'s **Intel 2.5G (`eno2`)** port.
-   - Leave `8bsov`'s **10G (`eno1`)** port connected to your LAN switch (and unplug the UDM from the LAN switch so there are no duplicate `.67` gateways).
+2. **Switch trunk check (before unplugging UDM):**
+   - Ensure the switch port connected to `eno1` (10 GbE) carries **Native VLAN 47 + Tagged ALL VLANs** (or move the existing 10G switch trunk cable straight onto `eno1`).
+   - Move any PoE devices plugged directly into the UDM-SE's built-in 8-port PoE switch (`eth0`–`eth7`) over to your PoE switches (`USW-Pro-24-PoE` / `US-16-PoE-150W` / `US-8-150W`).
+3. **Cut over:**
+   - Move the ISP ONT/modem Ethernet cable → `eno2` (Intel 2.5G).
+   - Unplug the UDM from the LAN trunk so there are no duplicate gateway IPs.
    - Run:
      ```bash
-     sudo ./ayefire-gateway-ctl.sh cutover
+     sudo ayefire-gateway-ctl cutover
      ```
-   - `cutover` checks that `eno2` has physical carrier BEFORE changing any routes!
-3. **Instant rollback (if ever needed):**
+   - `cutover` verifies `eno2` physical link carrier BEFORE modifying any routes, clones your ISP WAN MAC onto `eno2`, brings up all 802.1Q VLANs, enforces zero-WAN camera isolation, steers DNS to AyeFire `:5354`, and starts DHCP.
+4. **Instant rollback anytime:**
    ```bash
-   sudo ./ayefire-gateway-ctl.sh rollback
+   sudo ayefire-gateway-ctl rollback
    ```
-
-## Managing Existing UniFi AP SSIDs Later Without the UDM (Optional)
-If you ever want to change Wi-Fi passwords/SSIDs on your separate UniFi APs later, spin up a local LAN-only UniFi Network Application container on demand (stopped when not editing Wi-Fi):
-```bash
-docker run --rm --name unifi-ap-admin --network host \
-  -v ~/.local/share/ayefire/unifi-ap:/config \
-  lscr.io/linuxserver/unifi-network-application:latest
-```
-
-## Isolating Any Camera / Smart TV to Local-Only (Zero WAN)
-Per `ayefire_onboard.rs` Tier 1 ("Nothing leaves by default"):
-```bash
-sudo nft add element inet ayefire_gateway iot_local_only { 172.16.47.55 }
-```
