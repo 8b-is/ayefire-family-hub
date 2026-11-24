@@ -141,19 +141,22 @@ input[type="text"],input[type="email"],textarea{
     </div>
     <nav class="nav-links" aria-label="AyeFire links">
       <a class="pill mint" href="/welcome">Sanctuary Front Door</a>
-      <a class="pill gold" href="http://127.0.0.1:8080/" target="_blank" rel="noopener">Phoenix Audio (:8080)</a>
-      <a class="pill" href="/api/sanctuary/manifest">8a/8b/tai Manifest</a>
-      <a class="pill" href="/api/library/status">Library JSON</a>
-      <a class="pill" href="/api/family/status">Status JSON</a>
+      <a class="pill gold" href="/?tab=phoenix">Phoenix Live Gateway</a>
+      <a class="pill cyan" href="/?tab=gateway">Edge Cache &amp; Router</a>
+      <a class="pill" href="http://127.0.0.1:8080/" target="_blank" rel="noopener">Phoenix Lab (:8080)</a>
+      <a class="pill" href="/api/gateway/status">Gateway JSON</a>
+      <a class="pill" href="/api/phoenix/status">Phoenix JSON</a>
     </nav>
   </header>
 
   <section class="tabs-shell">
     <div class="tablist" focusgroup="tablist nomemory" aria-label="AyeFire family care modules">
-      <button type="button" id="tab-sanctuary" aria-selected="true" focusgroupstart>Sanctuary Library (Offline Internet)</button>
-      <button type="button" id="tab-kitchen" aria-selected="false">Alex’s Kitchen (zenUltraCooker)</button>
-      <button type="button" id="tab-forms" aria-selected="false">Print-to-Aye Forms (IPP :__IPP_PORT__)</button>
-      <button type="button" id="tab-brain" aria-selected="false">DeepSeek p/q Local Brain</button>
+      <button type="button" id="tab-sanctuary" aria-selected="true" focusgroupstart>Sanctuary Library</button>
+      <button type="button" id="tab-phoenix" aria-selected="false">Phoenix Audio (Live)</button>
+      <button type="button" id="tab-gateway" aria-selected="false">Edge Cache &amp; Gateway</button>
+      <button type="button" id="tab-kitchen" aria-selected="false">Alex’s Kitchen</button>
+      <button type="button" id="tab-forms" aria-selected="false">Print-to-Aye (:__IPP_PORT__)</button>
+      <button type="button" id="tab-brain" aria-selected="false">DeepSeek p/q Brain</button>
     </div>
 
     <div class="panels-grid">
@@ -215,7 +218,154 @@ input[type="text"],input[type="email"],textarea{
         </div>
       </div>
 
-      <!-- TAB 1: ALEX'S KITCHEN (zenUltraCooker) -->
+      <!-- TAB 1: ON-THE-FLY PHOENIX AUDIO GATEWAY & BLAKE3 MEDIA CACHE -->
+      <div role="tabpanel" id="panel-phoenix" aria-labelledby="tab-phoenix" hidden="until-found">
+        <div class="panel-inner">
+          <div class="row-item ok">
+            <strong>On-the-Fly Zero-Float Phoenix Audio Gateway (music.aye · Embedded #![no_std] PhoenixEnginePq)</strong>
+            <span class="muted">Restores any local track, podcast, or live HTTP/HTTPS radio stream block-by-block through exact Q31/Q15 integer DSP with single-stage unity gain (zero double-volume bugs) and caches finite streams on NVMe by BLAKE3 hash for 0 ms replay.</span>
+          </div>
+
+          <div class="kpi-row">
+            <div class="kpi"><span>Engine &amp; Gain Stage</span><strong class="ok" id="phx-engine">Zero-Float Unity ✓</strong></div>
+            <div class="kpi"><span>Local Tracks Indexed</span><strong class="cyan" id="phx-tracks-count">—</strong></div>
+            <div class="kpi"><span>NVMe Restored Cache</span><strong class="mint" id="phx-cache-kpi">—</strong></div>
+            <div class="kpi"><span>Cache Hit Ratio (p/q)</span><strong class="gold" id="phx-hit-pq">0/1</strong></div>
+          </div>
+
+          <div class="card">
+            <h2>
+              <span>Live Streaming Player &amp; A/B Dry/Phoenix Switch</span>
+              <span class="pill ok" id="phx-live-pill">IDLE</span>
+            </h2>
+            <div class="field-grid">
+              <div class="field">
+                <label for="phx-preset">Phoenix Preset:</label>
+                <select id="phx-preset" style="font:inherit;font-size:0.84rem;padding:8px 10px;border-radius:6px;inline-size:100%;background:#060913;color:var(--ink);border:1px solid var(--bdr-hi);">
+                  <option value="natural">Natural (GoldenPq + Marine Soul Guard)</option>
+                  <option value="vocal">Vocal (P!nk / Barbra Air &amp; Presence)</option>
+                  <option value="vintage">Vintage / MP3 Restoration</option>
+                  <option value="atmos_dome">Atmos 3D Dome (6-Wall Wave Stage)</option>
+                  <option value="intimate_club">Intimate Club (Atmos 3D)</option>
+                  <option value="rock_stage">Rock Stage (Atmos 3D)</option>
+                  <option value="late_night">Late Night (Warm Low-Fatigue)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="phx-rate">Output Sample Rate:</label>
+                <select id="phx-rate" style="font:inherit;font-size:0.84rem;padding:8px 10px;border-radius:6px;inline-size:100%;background:#060913;color:var(--ink);border:1px solid var(--bdr-hi);">
+                  <option value="48000">48 kHz (Universal Phone / TV / Browser)</option>
+                  <option value="96000">96 kHz (Studio Hi-Res)</option>
+                  <option value="192000">192 kHz (Audiophile Hi-Res)</option>
+                  <option value="384000">384 kHz (DAC Direct · TX-384Khz)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="phx-bits">PCM Bit Depth:</label>
+                <select id="phx-bits" style="font:inherit;font-size:0.84rem;padding:8px 10px;border-radius:6px;inline-size:100%;background:#060913;color:var(--ink);border:1px solid var(--bdr-hi);">
+                  <option value="24">24-bit Lossless PCM (s24le)</option>
+                  <option value="16">16-bit Universal PCM (s16le)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="phx-url">Or paste ANY live Internet Radio / Podcast / MP3 / FLAC URL to Phoenix on the fly:</label>
+              <input id="phx-url" type="text" placeholder="https://example.org/radio-stream.mp3 or podcast episode URL">
+            </div>
+
+            <div class="btn-row">
+              <button type="button" class="act primary" id="btn-phx-play-url">Stream URL Through Phoenix</button>
+              <button type="button" class="act" id="btn-phx-ab">A/B Mode: PHOENIX ON (Click for Dry Bypass)</button>
+              <button type="button" class="act" id="btn-phx-rescan">Rescan Local Audio</button>
+              <a class="btn" href="http://127.0.0.1:8080/" target="_blank" rel="noopener">Open Full Phoenix Lab (:8080)</a>
+            </div>
+
+            <div class="row-item ok">
+              <strong id="phx-now-playing">Select any local track below or paste a live stream URL</strong>
+              <audio id="phx-player" controls preload="none" style="inline-size:100%;margin-top:6px"></audio>
+            </div>
+
+            <div class="kpi-row" id="phx-telemetry-row">
+              <div class="kpi"><span>Marine Salience (L / R)</span><strong class="mint" id="phx-salience">0 / 0</strong></div>
+              <div class="kpi"><span>Dynamic φ (milli-φ)</span><strong class="gold" id="phx-phi">1618</strong></div>
+              <div class="kpi"><span>Frames Restored</span><strong class="cyan" id="phx-frames">0</strong></div>
+              <div class="kpi"><span>WAN / DSP Bytes Saved</span><strong class="ok" id="phx-saved">0 KiB</strong></div>
+            </div>
+            <div class="row-item" id="phx-bands">5-Band MarineSense Emotional Envelopes: Warmth 0 · Presence 0 · Clarity 0 · Air 0 · Ultrasonic 0</div>
+          </div>
+
+          <article class="card">
+            <h2><span>Local Audio Library (~/Music · ~/Documents/Notebook · ~/Downloads)</span><span class="pill cyan" id="phx-list-pill">0 tracks</span></h2>
+            <div class="list" id="phx-track-list"></div>
+          </article>
+        </div>
+      </div>
+
+      <!-- TAB 2: BLAKE3 SOVEREIGN EDGE CACHE & AYEFIRE ROUTER CUTOVER -->
+      <div role="tabpanel" id="panel-gateway" aria-labelledby="tab-gateway" hidden="until-found">
+        <div class="panel-inner">
+          <div class="row-item ok" id="gw-mode-banner">
+            <strong>Inspecting live Linux kernel gateway interfaces…</strong>
+            <span class="muted">Reading real /sys/class/net, /proc/net/route, /proc/net/arp, and BLAKE3 cache state.</span>
+          </div>
+
+          <div class="kpi-row">
+            <div class="kpi"><span>Sovereign DNS Queries</span><strong class="cyan" id="gw-dns-q">0</strong></div>
+            <div class="kpi"><span>DNS Cache / .aye Hits</span><strong class="ok" id="gw-dns-hits">0</strong></div>
+            <div class="kpi"><span>Telemetry / UI Blocked</span><strong class="gold" id="gw-dns-blocked">0</strong></div>
+            <div class="kpi"><span>Edge Cache Proxy</span><strong class="mint" id="gw-proxy-port">:8792</strong></div>
+          </div>
+
+          <div class="grid-2">
+            <article class="card">
+              <h2><span>8bsov Physical NICs &amp; Routing State</span><span class="pill ok" id="gw-fwd-pill">ip_forward</span></h2>
+              <div class="list" id="gw-nics"></div>
+              <h3><span>Live LAN Neighbors (/proc/net/arp)</span><span class="pill gold">REAL ARP TABLE</span></h3>
+              <div class="list" id="gw-arp"></div>
+            </article>
+
+            <article class="card">
+              <h2><span>BLAKE3 Sovereign Edge Cache (:8792 + Zero-MITM HTTPS)</span><span class="pill cyan" id="gw-edge-pq">0/1</span></h2>
+              <div class="kpi-row">
+                <div class="kpi"><span>Cached Objects</span><strong id="gw-edge-cnt">0</strong></div>
+                <div class="kpi"><span>NVMe Used / Cap</span><strong class="mint" id="gw-edge-mib">0 MiB</strong></div>
+                <div class="kpi"><span>WAN Saved</span><strong class="ok" id="gw-edge-saved">0 KiB</strong></div>
+                <div class="kpi"><span>Zero-MITM Tunnels</span><strong class="gold" id="gw-edge-connect">0</strong></div>
+              </div>
+              <div class="field">
+                <label for="gw-warm-url">Test BLAKE3 Edge Cache (fetch once → cached on NVMe → instant offline HIT):</label>
+                <input id="gw-warm-url" type="text" placeholder="https://raw.githubusercontent.com/8b-is/ayefire-family-hub/main/Cargo.toml">
+              </div>
+              <div class="btn-row">
+                <button type="button" class="act primary" id="btn-gw-warm">Fetch &amp; Cache via BLAKE3</button>
+                <button type="button" class="act" id="btn-gw-refresh">Refresh Gateway Status</button>
+                <a class="btn" href="/wpad.dat" target="_blank" rel="noopener">View /wpad.dat</a>
+              </div>
+              <div class="answer-box" id="gw-warm-out">Ready — LAN clients can set http_proxy=http://172.16.47.118:8792 (pacman, curl, apt, cargo) with zero OS Root CA MITM.</div>
+              <div class="list" id="gw-recent-cache"></div>
+            </article>
+          </div>
+
+          <article class="card">
+            <h2><span>Retiring the UniFi Dream Machine (Zero-Renumbering Cutover Kit)</span><span class="pill ok">INSTANT ROLLBACK</span></h2>
+            <div class="row-item ok">
+              <strong>1. Staged Parallel Test (Live Right Now — UDM Untouched)</strong>
+              <span class="muted"><code>~/source/8b-is/ayefire-family-hub/scripts/ayefire-router/ayefire-gateway-ctl.sh stage</code> — Test `.aye` + caching DNS on `:5354`, BLAKE3 cache proxy on `:8792`, and Phoenix live audio on `:8790`.</span>
+            </div>
+            <div class="row-item warn">
+              <strong>2. Physical Cutover (Keep Separate UniFi APs Running As-Is!)</strong>
+              <span class="muted">Move ISP modem Ethernet → <code>eno2</code> (Intel 2.5G port). Leave <code>eno1</code> (10G) on your switch/APs, unplug UDM from switch, then run <code>sudo ./ayefire-gateway-ctl.sh cutover</code>. AyeFire claims exact gateway IP <code>172.16.47.67/25</code> + preserves <code>.118</code>, turns on stateful <code>nftables</code> NAT + port-53 DNS steering + DHCPv4!</span>
+            </div>
+            <div class="row-item">
+              <strong>3. Instant Rollback Anytime</strong>
+              <span class="muted"><code>sudo ./ayefire-gateway-ctl.sh rollback</code> restores <code>eno1</code> to normal DHCP client in 2 seconds.</span>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <!-- TAB 3: ALEX'S KITCHEN (zenUltraCooker) -->
       <div role="tabpanel" id="panel-kitchen" aria-labelledby="tab-kitchen" hidden="until-found">
         <div class="panel-inner">
           <div class="kpi-row" id="kitchen-kpis">
@@ -711,7 +861,183 @@ input[type="text"],input[type="email"],textarea{
   document.getElementById("lib-query").addEventListener("keydown",(e)=>{if(e.key==="Enter")runLibrarySearch();});
   document.getElementById("lib-collection").addEventListener("change",runLibrarySearch);
 
-  // Honor ?tab=sanctuary|kitchen|forms|brain from Host routing & /welcome cards
+  // --- ON-THE-FLY PHOENIX AUDIO GATEWAY ---
+  let phxBypass=false;
+  let phxActiveSource=null; // {kind:"local",id,title} | {kind:"url",url}
+
+  function fmtKiB(bytes){
+    const b=Number(bytes||0);
+    if(b>=1048576)return String(Math.trunc(b/1048576))+" MiB";
+    if(b>=1024)return String(Math.trunc(b/1024))+" KiB";
+    return String(b)+" B";
+  }
+
+  function buildPhoenixUrl(src){
+    const preset=phxBypass?"bypass":document.getElementById("phx-preset").value;
+    const rate=document.getElementById("phx-rate").value;
+    const bits=document.getElementById("phx-bits").value;
+    if(src.kind==="local"){
+      return "/api/phoenix/local/"+encodeURIComponent(src.id)+"?preset="+encodeURIComponent(preset)+"&rate="+encodeURIComponent(rate)+"&bits="+encodeURIComponent(bits);
+    }
+    return "/api/phoenix/proxy?url="+encodeURIComponent(src.url)+"&preset="+encodeURIComponent(preset)+"&rate="+encodeURIComponent(rate)+"&bits="+encodeURIComponent(bits);
+  }
+
+  function playPhoenixSource(src){
+    phxActiveSource=src;
+    const player=document.getElementById("phx-player");
+    const preset=phxBypass?"BYPASS (DRY)":document.getElementById("phx-preset").value.toUpperCase();
+    const rate=document.getElementById("phx-rate").value;
+    const bits=document.getElementById("phx-bits").value;
+    const label=src.kind==="local"?src.title:src.url;
+    document.getElementById("phx-now-playing").textContent="Streaming ["+preset+" · "+rate+" Hz / "+bits+"-bit]: "+label;
+    player.src=buildPhoenixUrl(src);
+    player.play().catch(()=>{});
+    setTimeout(loadPhoenixStatus,700);
+  }
+
+  async function loadPhoenixStatus(){
+    try{
+      const r=await fetch("/api/phoenix/status");
+      if(!r.ok)return;
+      const d=await r.json();
+      const p=d.phoenix||{};
+      const live=p.live||{};
+      document.getElementById("phx-tracks-count").textContent=String(p.tracks_indexed||0);
+      document.getElementById("phx-cache-kpi").textContent=String(p.cached_entries||0)+" files ("+String(p.cached_mib||0)+" MiB)";
+      document.getElementById("phx-hit-pq").textContent=p.hit_ratio_pq||"0/1";
+      document.getElementById("phx-live-pill").textContent=live.cache_status||"IDLE";
+      document.getElementById("phx-salience").textContent=String(live.salience_left||0)+" / "+String(live.salience_right||0);
+      document.getElementById("phx-phi").textContent=String(live.phi_milli||1618)+" (×10⁻³)";
+      document.getElementById("phx-frames").textContent=String(p.frames_restored||0);
+      document.getElementById("phx-saved").textContent=fmtKiB(p.wan_bytes_saved||0);
+      const b=live.bands_q15||[0,0,0,0,0];
+      const pct=(v)=>Math.min(100,Math.trunc((Number(v||0)*100)/32768));
+      document.getElementById("phx-bands").innerHTML=
+        "<strong>MarineSense 5-Band Emotional Envelopes (Integer Q15):</strong> "+
+        "Warmth <span class='gold'>"+pct(b[0])+"%</span> · "+
+        "Presence <span class='mint'>"+pct(b[1])+"%</span> · "+
+        "Clarity <span class='cyan'>"+pct(b[2])+"%</span> · "+
+        "Air <span class='ok'>"+pct(b[3])+"%</span> · "+
+        "Ultrasonic <span class='cyan'>"+pct(b[4])+"%</span>";
+    }catch(_e){}
+  }
+
+  async function loadPhoenixTracks(){
+    try{
+      const r=await fetch("/api/phoenix/tracks");
+      if(!r.ok)return;
+      const d=await r.json();
+      const tracks=d.tracks||[];
+      document.getElementById("phx-list-pill").textContent=String(tracks.length)+" tracks";
+      const el=document.getElementById("phx-track-list");
+      if(!tracks.length){
+        el.innerHTML='<div class="row-item"><strong>No local audio files found</strong><span class="muted">Drop MP3/FLAC/WAV/Opus files into ~/Music or paste a live radio URL above.</span></div>';
+        return;
+      }
+      el.innerHTML=tracks.map(t=>{
+        const badge=(t.cached_presets&&t.cached_presets.length)?'<span class="pill ok">⚡ NVMe CACHED ('+esc(t.cached_presets.join(","))+')</span>':'<span class="pill cyan">🔥 LIVE ON-THE-FLY DSP</span>';
+        return '<div class="row-item ok">'+
+          '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><strong>'+esc(t.title)+'</strong>'+badge+'</div>'+
+          '<span class="muted">'+esc(t.collection)+' · .'+esc(t.ext)+' · '+fmtKiB(t.size_bytes)+'</span>'+
+          '<div class="btn-row"><button type="button" class="act primary" data-phx-play="'+esc(t.id)+'" data-phx-title="'+esc(t.title)+'">Play Through Phoenix</button></div>'+
+        '</div>';
+      }).join("");
+      for(const btn of el.querySelectorAll("[data-phx-play]")){
+        btn.addEventListener("click",()=>playPhoenixSource({
+          kind:"local",
+          id:btn.getAttribute("data-phx-play"),
+          title:btn.getAttribute("data-phx-title")||"Track"
+        }));
+      }
+    }catch(_e){}
+  }
+
+  document.getElementById("btn-phx-play-url").addEventListener("click",()=>{
+    const u=document.getElementById("phx-url").value.trim();
+    if(!u)return;
+    playPhoenixSource({kind:"url",url:u});
+  });
+  document.getElementById("btn-phx-ab").addEventListener("click",()=>{
+    phxBypass=!phxBypass;
+    document.getElementById("btn-phx-ab").textContent=phxBypass
+      ?"A/B Mode: DRY BYPASS (Click for Phoenix ON)"
+      :"A/B Mode: PHOENIX ON (Click for Dry Bypass)";
+    if(phxActiveSource)playPhoenixSource(phxActiveSource);
+  });
+  for(const selId of ["phx-preset","phx-rate","phx-bits"]){
+    document.getElementById(selId).addEventListener("change",()=>{
+      if(phxActiveSource)playPhoenixSource(phxActiveSource);
+    });
+  }
+  document.getElementById("btn-phx-rescan").addEventListener("click",async()=>{
+    await fetch("/api/phoenix/rescan",{method:"POST"});
+    loadPhoenixTracks();
+    loadPhoenixStatus();
+  });
+
+  // --- EDGE CACHE & LIVE GATEWAY ---
+  async function loadGatewayStatus(){
+    try{
+      const r=await fetch("/api/gateway/status");
+      if(!r.ok)return;
+      const d=await r.json();
+      const hw=d.hardware||{};
+      const dns=d.dns||{};
+      const edge=d.edge_cache||{};
+      document.getElementById("gw-mode-banner").innerHTML=
+        '<strong>Gateway Mode: '+esc(hw.mode||"unknown")+'</strong>'+
+        '<span class="muted">Default route: '+esc(hw.default_gateway_ip)+' via '+esc(hw.default_gateway_iface)+' · DNS mode: '+esc(dns.mode)+' (upstream '+esc(dns.upstream_primary)+', WAN DNS '+(dns.wan_dns_reachable?'UP ✓':'OFFLINE FAILOVER')+')</span>';
+      document.getElementById("gw-fwd-pill").textContent=hw.ip_forward_enabled?"ip_forward=1 ✓":"ip_forward=0 (STAGED)";
+      document.getElementById("gw-dns-q").textContent=String(dns.queries_answered||0);
+      document.getElementById("gw-dns-hits").textContent=String(dns.cache_hits||0)+" cache / "+String(dns.aye_local_hits||0)+" .aye";
+      document.getElementById("gw-dns-blocked").textContent=String(dns.sinkhole_blocked||0);
+      document.getElementById("gw-proxy-port").textContent=":"+String(edge.proxy_port||8792)+" (Zero-MITM)";
+      document.getElementById("gw-edge-pq").textContent="Hit "+String(edge.hit_ratio_pq||"0/1");
+      document.getElementById("gw-edge-cnt").textContent=String(edge.entries||0);
+      document.getElementById("gw-edge-mib").textContent=String(edge.total_mib||0)+" / "+String(edge.max_mib||0)+" MiB";
+      document.getElementById("gw-edge-saved").textContent=fmtKiB(edge.wan_bytes_saved||0);
+      document.getElementById("gw-edge-connect").textContent=String(edge.connect_tunnels||0);
+
+      document.getElementById("gw-nics").innerHTML=(hw.interfaces||[]).map(n=>{
+        const cls=n.carrier?"ok":(n.name==="eno2"?"warn":"");
+        const spd=n.speed_mbps>0?(String(n.speed_mbps)+" Mbps"):"no link";
+        return '<div class="row-item '+cls+'"><strong>'+esc(n.name)+' · '+esc(n.operstate.toUpperCase())+' ('+esc(spd)+')</strong>'+
+          '<span class="muted">'+esc(n.role)+' · MAC '+esc(n.mac)+' · RX '+String(n.rx_mib)+' MiB / TX '+String(n.tx_mib)+' MiB</span></div>';
+      }).join("");
+
+      const arp=hw.lan_neighbors||[];
+      document.getElementById("gw-arp").innerHTML=arp.length?arp.map(a=>
+        '<div class="row-item '+(a.is_current_gateway?"warn":"ok")+'"><strong>'+esc(a.ip)+(a.is_current_gateway?' [CURRENT GATEWAY]':'')+' · '+esc(a.vendor_hint)+'</strong>'+
+        '<span class="muted">MAC '+esc(a.mac)+' on '+esc(a.device)+'</span></div>'
+      ).join(""):'<div class="row-item"><strong>No ARP neighbors visible yet</strong></div>';
+
+      const rec=edge.recent||[];
+      document.getElementById("gw-recent-cache").innerHTML=rec.slice(0,8).map(ev=>
+        '<div class="row-item '+(ev.status==="HIT"?"ok":"")+'"><strong>['+esc(ev.status)+'] '+esc(ev.host)+' · '+fmtKiB(ev.size_bytes)+'</strong>'+
+        '<span class="muted">BLAKE3 '+esc(ev.blake3_short)+'… · '+esc(ev.content_type)+' · '+esc(ev.url_preview)+'</span></div>'
+      ).join("");
+    }catch(_e){}
+  }
+
+  document.getElementById("btn-gw-warm").addEventListener("click",async()=>{
+    const url=document.getElementById("gw-warm-url").value.trim();
+    if(!url)return;
+    const out=document.getElementById("gw-warm-out");
+    out.textContent="Fetching through AyeFire BLAKE3 Edge Cache…";
+    try{
+      const r=await fetch("/api/cache/warm",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url})});
+      const d=await r.json();
+      if(d.ok){
+        out.textContent="["+d.cache_status+"] HTTP "+d.http_status+" · "+fmtKiB(d.size_bytes)+" · "+d.content_type+"\nBLAKE3 content hash: "+d.content_blake3+"\nClick again to verify an instant 0-WAN-byte NVMe cache HIT!";
+        loadGatewayStatus();
+      }else{
+        out.textContent="Cache error: "+(d.error||"failed");
+      }
+    }catch(e){out.textContent="Request failed: "+e;}
+  });
+  document.getElementById("btn-gw-refresh").addEventListener("click",loadGatewayStatus);
+
+  // Honor ?tab=sanctuary|phoenix|gateway|kitchen|forms|brain from Host routing & /welcome cards
   const wantedTab=new URLSearchParams(window.location.search).get("tab");
   if(wantedTab){
     const target=document.getElementById("tab-"+wantedTab);
@@ -720,6 +1046,10 @@ input[type="text"],input[type="email"],textarea{
 
   loadAll();
   loadLibraryStatus().then(runLibrarySearch);
+  loadPhoenixStatus();
+  loadPhoenixTracks();
+  loadGatewayStatus();
+  setInterval(loadPhoenixStatus,4000);
 })();
 </script>
 </body>
@@ -830,10 +1160,15 @@ footer{{text-align:center;font-size:0.8rem;color:var(--muted);}}
       <code>ask.aye</code>
       <p>Loopback sovereign AI tutor grounded strictly in cited local passages — honest provenance, zero cloud egress.</p>
     </a>
-    <a class="door gold" href="http://{lan_ip}:8080/" target="_blank" rel="noopener">
-      <strong>Phoenix Audio Listening Room</strong>
-      <code>music.aye · http://{lan_ip}:8080</code>
-      <p>Zero-float harmonic audio restoration and local listening room running right on this box.</p>
+    <a class="door gold" href="/?tab=phoenix">
+      <strong>On-the-Fly Phoenix Audio Gateway</strong>
+      <code>music.aye · Zero-Float PhoenixEnginePq</code>
+      <p>Stream local tracks or live radio URLs through real-time zero-float Phoenix DSP with BLAKE3 NVMe caching up to 384 kHz.</p>
+    </a>
+    <a class="door" href="/?tab=gateway">
+      <strong>Edge Cache &amp; Live Gateway</strong>
+      <code>router.aye · cache.aye · Proxy :8792</code>
+      <p>BLAKE3 LAN pull-through cache, telemetry-blocking DNS, live 10G/2.5G NIC status, and UDM cutover control.</p>
     </a>
     <a class="door" href="/?tab=kitchen">
       <strong>Alex’s Kitchen (zenUltraCooker)</strong>

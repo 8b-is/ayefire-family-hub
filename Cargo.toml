@@ -11,6 +11,7 @@ blake3 = "1.5"
 futures = "0.3"
 ipp-ngest = { path = "../../8bit-wraith/ipp-rs", features = ["server"] }
 oxidize-pdf = { path = "../oxidizePdf/oxidize-pdf-core", default-features = false, features = ["compression"] }
+phoenix-core = { path = "../phoenix-protocol/crates/phoenix-core", features = ["std"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

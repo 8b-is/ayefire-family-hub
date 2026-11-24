@@ -7,13 +7,17 @@
 //!   3. Hue's Print-to-Aye IPP Listener (`ipp-ngest` `:6631` + `oxidize-pdf` Form Filler + `.eml` Drafts)
 
 mod deepseek_pq;
+mod edge_cache;
+mod gateway_status;
 mod ipp_printer;
 mod pdf_forms;
+mod phoenix_gateway;
 mod sanctuary_dns;
 mod sanctuary_library;
 mod ui;
 
 use axum::{
+    body::Body,
     extract::{Multipart, Path as AxumPath, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
@@ -27,7 +31,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::RwLock;
 
 #[derive(Serialize)]
@@ -176,8 +182,10 @@ async fn index_handler(State(state): State<FamilySharedState>, headers: HeaderMa
             ))
             .into_response()
         }
-        "music.aye" => Redirect::temporary(&format!("http://{}:8080/", state.dns.lan_ipv4))
-            .into_response(),
+        "music.aye" => Redirect::temporary("/?tab=phoenix").into_response(),
+        "router.aye" | "gateway.aye" | "cache.aye" => {
+            Redirect::temporary("/?tab=gateway").into_response()
+        }
         "kitchen.aye" => Redirect::temporary("/?tab=kitchen").into_response(),
         "print.aye" => Redirect::temporary("/?tab=forms").into_response(),
         "ask.aye" => Redirect::temporary("/?tab=brain").into_response(),
@@ -776,6 +784,381 @@ async fn library_ask_handler(
     }
 }
 
+#[derive(Deserialize)]
+struct PhoenixStreamQuery {
+    #[serde(default)]
+    preset: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    rate: Option<u32>,
+    #[serde(default)]
+    bits: Option<u16>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    cache: Option<u8>,
+}
+
+#[derive(Deserialize)]
+struct CacheFetchQuery {
+    url: String,
+    #[serde(default)]
+    refresh: Option<u8>,
+}
+
+#[derive(Deserialize)]
+struct CacheWarmPayload {
+    url: String,
+}
+
+async fn wpad_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let lan = state.dns.lan_ipv4;
+    let proxy_port = state.edge_cache.proxy_port;
+    let pac = format!(
+        "function FindProxyForURL(url, host) {{\n  if (isPlainHostName(host) || dnsDomainIs(host, \".aye\") || dnsDomainIs(host, \".local\") || isInNet(host, \"172.16.47.0\", \"255.255.255.128\") || isInNet(host, \"127.0.0.0\", \"255.0.0.0\")) {{\n    return \"DIRECT\";\n  }}\n  if (url.substring(0, 5) == \"http:\") {{\n    return \"PROXY {lan}:{proxy_port}; DIRECT\";\n  }}\n  return \"DIRECT\";\n}}\n"
+    );
+    (
+        StatusCode::OK,
+        [(
+            header::CONTENT_TYPE,
+            "application/x-ns-proxy-autoconfig; charset=utf-8".to_string(),
+        )],
+        pac,
+    )
+}
+
+async fn phoenix_status_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let st = state.phoenix.status().await;
+    Json(serde_json::json!({ "ok": true, "phoenix": st }))
+}
+
+async fn phoenix_tracks_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let tracks = state.phoenix.list_tracks().await;
+    Json(serde_json::json!({
+        "ok": true,
+        "count": tracks.len(),
+        "tracks": tracks
+    }))
+}
+
+async fn phoenix_rescan_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let count = state.phoenix.rescan_tracks().await;
+    Json(serde_json::json!({ "ok": true, "tracks_indexed": count }))
+}
+
+async fn serve_cached_wav_with_range(
+    wav_path: PathBuf,
+    req_headers: &HeaderMap,
+    preset: &str,
+    rate: u32,
+) -> Response {
+    let Ok(md) = tokio::fs::metadata(&wav_path).await else {
+        return (StatusCode::NOT_FOUND, "cached audio missing").into_response();
+    };
+    let total_len = md.len();
+    let range_hdr = req_headers
+        .get(header::RANGE)
+        .and_then(|v| v.to_str().ok());
+
+    let (status, start, end) = match range_hdr
+        .and_then(|h| phoenix_gateway::parse_http_byte_range(h, total_len))
+    {
+        Some((s, e)) => (StatusCode::PARTIAL_CONTENT, s, e),
+        None => (StatusCode::OK, 0, total_len.saturating_sub(1)),
+    };
+    let send_len = end.saturating_sub(start).saturating_add(1);
+
+    let Ok(mut file) = tokio::fs::File::open(&wav_path).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "failed opening cached wav").into_response();
+    };
+    if start > 0 && file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+        return (StatusCode::RANGE_NOT_SATISFIABLE, "invalid byte range").into_response();
+    }
+
+    let stream = futures::stream::unfold((file, send_len), |(mut f, mut rem)| async move {
+        if rem == 0 {
+            return None;
+        }
+        let chunk_sz = (rem as usize).min(65_536);
+        let mut buf = vec![0u8; chunk_sz];
+        match f.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                rem = rem.saturating_sub(n as u64);
+                Some((Ok::<Vec<u8>, std::io::Error>(buf), (f, rem)))
+            }
+            Err(e) => Some((Err(e), (f, 0))),
+        }
+    });
+
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, send_len.to_string())
+        .header("X-AyeFire-Phoenix-Cache", "HIT")
+        .header("X-AyeFire-Phoenix-Preset", preset)
+        .header("X-AyeFire-Phoenix-Rate", rate.to_string());
+    if status == StatusCode::PARTIAL_CONTENT {
+        builder = builder.header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{total_len}"),
+        );
+    }
+    builder
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn phoenix_local_stream_handler(
+    State(state): State<FamilySharedState>,
+    AxumPath(id): AxumPath<String>,
+    Query(q): Query<PhoenixStreamQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(track) = state.phoenix.find_track(&id).await else {
+        return (StatusCode::NOT_FOUND, "track not found in local library").into_response();
+    };
+    let allow_cache = q.cache.unwrap_or(1) != 0;
+    let opts = phoenix_gateway::StreamOptions::parse(
+        q.preset.as_deref(),
+        q.mode.as_deref(),
+        q.rate,
+        q.bits,
+        allow_cache,
+    );
+    let fingerprint = format!("local:{}:{}", track.id, track.size_bytes);
+    let cache_key = state.phoenix.cache_key(&fingerprint, opts);
+
+    if opts.allow_cache {
+        if let Some((wav_path, meta)) = state.phoenix.lookup_cached(&cache_key) {
+            let sz = tokio::fs::metadata(&wav_path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
+            state
+                .phoenix
+                .record_cache_hit(&track.title, opts, sz, meta.as_ref())
+                .await;
+            return serve_cached_wav_with_range(
+                wav_path,
+                &headers,
+                opts.preset_label(),
+                opts.sample_rate,
+            )
+            .await;
+        }
+    }
+
+    let rx = match state.phoenix.spawn_live_stream(
+        track.path.display().to_string(),
+        track.title.clone(),
+        opts,
+        if opts.allow_cache {
+            Some(cache_key)
+        } else {
+            None
+        },
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Phoenix live pipeline failed: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    let stream = futures::stream::unfold(rx, |mut r| async move {
+        r.recv()
+            .await
+            .map(|chunk| (Ok::<Vec<u8>, std::io::Error>(chunk), r))
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("X-AyeFire-Phoenix-Cache", "LIVE-DSP")
+        .header("X-AyeFire-Phoenix-Preset", opts.preset_label())
+        .header("X-AyeFire-Phoenix-Rate", opts.sample_rate.to_string())
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn phoenix_proxy_stream_handler(
+    State(state): State<FamilySharedState>,
+    Query(q): Query<PhoenixStreamQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let raw_url = q.url.unwrap_or_default();
+    let url = match phoenix_gateway::validate_stream_url(&raw_url) {
+        Ok(u) => u,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+    let allow_cache = q.cache.unwrap_or(1) != 0;
+    let opts = phoenix_gateway::StreamOptions::parse(
+        q.preset.as_deref(),
+        q.mode.as_deref(),
+        q.rate,
+        q.bits,
+        allow_cache,
+    );
+    let fingerprint = format!("url:{url}");
+    let cache_key = state.phoenix.cache_key(&fingerprint, opts);
+
+    if opts.allow_cache {
+        if let Some((wav_path, meta)) = state.phoenix.lookup_cached(&cache_key) {
+            let sz = tokio::fs::metadata(&wav_path)
+                .await
+                .map(|m| m.len())
+                .unwrap_or(0);
+            state
+                .phoenix
+                .record_cache_hit(&url, opts, sz, meta.as_ref())
+                .await;
+            return serve_cached_wav_with_range(
+                wav_path,
+                &headers,
+                opts.preset_label(),
+                opts.sample_rate,
+            )
+            .await;
+        }
+    }
+
+    let rx = match state.phoenix.spawn_live_stream(
+        url.clone(),
+        url.clone(),
+        opts,
+        if opts.allow_cache {
+            Some(cache_key)
+        } else {
+            None
+        },
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("Phoenix live URL proxy failed: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    let stream = futures::stream::unfold(rx, |mut r| async move {
+        r.recv()
+            .await
+            .map(|chunk| (Ok::<Vec<u8>, std::io::Error>(chunk), r))
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "audio/wav")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("X-AyeFire-Phoenix-Cache", "LIVE-DSP")
+        .header("X-AyeFire-Phoenix-Preset", opts.preset_label())
+        .header("X-AyeFire-Phoenix-Rate", opts.sample_rate.to_string())
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+async fn gateway_status_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let hw = gateway_status::inspect_gateway_hardware();
+    let edge = state.edge_cache.status().await;
+    let phx = state.phoenix.status().await;
+    let dns_cache_entries = state.dns.cache_len().await;
+
+    Json(serde_json::json!({
+        "ok": true,
+        "schema": "ayefire_gateway_v1",
+        "hardware": hw,
+        "dns": {
+            "port": state.dns.port,
+            "lan_ipv4": state.dns.lan_ipv4.to_string(),
+            "mode": if state.dns.gateway_mode { "gateway+cache" } else { "airgap" },
+            "sinkhole_enabled": state.dns.sinkhole_enabled,
+            "upstream_primary": state.dns.upstream_primary.to_string(),
+            "wan_dns_reachable": state.dns.wan_dns_reachable.load(Ordering::Relaxed),
+            "queries_answered": state.dns.queries_answered.load(Ordering::Relaxed),
+            "aye_local_hits": state.dns.aye_local_hits.load(Ordering::Relaxed),
+            "cache_hits": state.dns.cache_hits.load(Ordering::Relaxed),
+            "upstream_forwards": state.dns.upstream_forwards.load(Ordering::Relaxed),
+            "sinkhole_blocked": state.dns.sinkhole_blocked.load(Ordering::Relaxed),
+            "cache_entries": dns_cache_entries,
+        },
+        "edge_cache": edge,
+        "phoenix_cache": {
+            "entries": phx.cached_entries,
+            "cached_mib": phx.cached_mib,
+            "hits": phx.cache_hits,
+            "misses": phx.cache_misses,
+            "hit_ratio_pq": phx.hit_ratio_pq,
+            "wan_bytes_saved": phx.wan_bytes_saved,
+            "frames_restored": phx.frames_restored,
+        }
+    }))
+}
+
+async fn edge_cache_fetch_handler(
+    State(state): State<FamilySharedState>,
+    Query(q): Query<CacheFetchQuery>,
+) -> Response {
+    let force_refresh = q.refresh.unwrap_or(0) != 0;
+    match state
+        .edge_cache
+        .fetch_or_serve(&q.url, true, force_refresh)
+        .await
+    {
+        Ok(res) => Response::builder()
+            .status(StatusCode::from_u16(res.status_code).unwrap_or(StatusCode::OK))
+            .header(header::CONTENT_TYPE, res.content_type)
+            .header("X-AyeFire-Cache", res.cache_status)
+            .header("X-AyeFire-Blake3", res.content_blake3)
+            .body(Body::from(res.body))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Err(e) => (StatusCode::BAD_GATEWAY, format!("Cache fetch error: {e}")).into_response(),
+    }
+}
+
+async fn edge_cache_warm_handler(
+    State(state): State<FamilySharedState>,
+    Json(req): Json<CacheWarmPayload>,
+) -> impl IntoResponse {
+    match state.edge_cache.fetch_or_serve(&req.url, true, false).await {
+        Ok(res) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "url": req.url,
+                "cache_status": res.cache_status,
+                "http_status": res.status_code,
+                "content_type": res.content_type,
+                "size_bytes": res.body.len(),
+                "blake3_key": res.blake3_key,
+                "content_blake3": res.content_blake3,
+            })),
+        ),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
+        ),
+    }
+}
+
+async fn edge_cache_objects_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let objects = state.edge_cache.list_cached_objects(48).await;
+    Json(serde_json::json!({
+        "ok": true,
+        "count": objects.len(),
+        "objects": objects
+    }))
+}
+
 async fn offline_sanctuary_headers(
     req: axum::http::Request<axum::body::Body>,
     next: Next,
@@ -785,7 +1168,7 @@ async fn offline_sanctuary_headers(
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'self'; frame-ancestors 'self'",
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: data:; object-src 'self'; frame-ancestors 'self'",
         ),
     );
     headers.insert(
@@ -847,6 +1230,8 @@ async fn main() -> anyhow::Result<()> {
 
     let merkle_short = &lib_st.merkle_root_blake3[..lib_st.merkle_root_blake3.len().min(16)];
     let dns = sanctuary_dns::SanctuaryDnsConfig::from_env(lib_st.total_docs, merkle_short);
+    let phoenix = phoenix_gateway::PhoenixGateway::load_from_env();
+    let edge_cache = edge_cache::EdgeCache::load_from_env();
 
     let state = FamilySharedState {
         spool_dir,
@@ -861,14 +1246,24 @@ async fn main() -> anyhow::Result<()> {
         ipp_jobs_received: Arc::new(RwLock::new(0)),
         library,
         dns: dns.clone(),
+        phoenix,
+        edge_cache: edge_cache.clone(),
         http_port,
     };
 
-    // Spawn pure-Rust Sovereign `.aye` DNS + offline captive-portal responder
+    // Spawn pure-Rust Sovereign `.aye` + Caching Forwarding DNS responder
     let dns_cfg = dns.clone();
     tokio::spawn(async move {
         if let Err(e) = sanctuary_dns::spawn_dns_responder(dns_cfg).await {
             eprintln!("[SANCTUARY-DNS] responder exited: {e}");
+        }
+    });
+
+    // Spawn LAN BLAKE3 HTTP Pull-Through Cache + Zero-MITM CONNECT Proxy (:8792)
+    let proxy_cache = edge_cache.clone();
+    tokio::spawn(async move {
+        if let Err(e) = edge_cache::spawn_http_cache_proxy(proxy_cache).await {
+            eprintln!("[EDGE-PROXY] proxy exited: {e}");
         }
     });
 
@@ -915,6 +1310,18 @@ async fn main() -> anyhow::Result<()> {
         // Public Commons (8a.is / 8b.is / tai.is) Manifest & JSONL Corpus API
         .route("/api/sanctuary/manifest", get(sanctuary_manifest_handler))
         .route("/api/sanctuary/corpus.jsonl", get(sanctuary_corpus_jsonl_handler))
+        // WPAD LAN Proxy Auto-Config + AyeFire Live Gateway + BLAKE3 Edge Cache
+        .route("/wpad.dat", get(wpad_handler))
+        .route("/api/gateway/status", get(gateway_status_handler))
+        .route("/api/cache/fetch", get(edge_cache_fetch_handler))
+        .route("/api/cache/warm", post(edge_cache_warm_handler))
+        .route("/api/cache/objects", get(edge_cache_objects_handler))
+        // On-the-Fly Zero-Float Phoenix Audio Gateway & BLAKE3 Restoration Cache
+        .route("/api/phoenix/status", get(phoenix_status_handler))
+        .route("/api/phoenix/tracks", get(phoenix_tracks_handler))
+        .route("/api/phoenix/rescan", post(phoenix_rescan_handler))
+        .route("/api/phoenix/local/:id", get(phoenix_local_stream_handler))
+        .route("/api/phoenix/proxy", get(phoenix_proxy_stream_handler))
         .route("/api/family/status", get(family_status_handler))
         .route("/api/library/status", get(library_status_handler))
         .route("/api/library/search", get(library_search_handler))

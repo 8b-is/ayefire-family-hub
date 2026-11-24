@@ -6,7 +6,9 @@
 //! DeepSeek `p/q` + `oxidize-pdf` form matching, prepares the filled PDF + `.eml` draft,
 //! and speaks a friendly confirmation aloud (unless Incognito is active).
 
+use crate::edge_cache::EdgeCache;
 use crate::pdf_forms::{self, HouseholdFamilyProfile, PrintedFormJob};
+use crate::phoenix_gateway::PhoenixGateway;
 use crate::sanctuary_dns::SanctuaryDnsConfig;
 use crate::sanctuary_library::SanctuaryLibrary;
 use ipp_ngest::model::{PageOrientation, Resolution};
@@ -41,6 +43,8 @@ pub struct FamilySharedState {
     pub ipp_jobs_received: Arc<RwLock<u64>>,
     pub library: Arc<SanctuaryLibrary>,
     pub dns: SanctuaryDnsConfig,
+    pub phoenix: Arc<PhoenixGateway>,
+    pub edge_cache: Arc<EdgeCache>,
     pub http_port: u16,
 }
 
