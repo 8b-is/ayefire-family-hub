@@ -258,6 +258,34 @@ input[type="text"],input[type="email"],textarea{
 
           <div class="card">
             <h2>
+              <span>id1.is Sovereign Transparency Passport (16-Byte ID1P · Portable Everywhere)</span>
+              <span class="pill cyan" id="id1-key-pill">id1_…</span>
+            </h2>
+            <div class="field-grid">
+              <div class="field">
+                <label for="id1-handle">Sovereign id1.is Handle:</label>
+                <input id="id1-handle" type="text" value="hue.id1.is">
+              </div>
+              <div class="field">
+                <label for="id1-preset">ID1P 16-Byte Presentation Signature:</label>
+                <select id="id1-preset" style="font:inherit;font-size:0.84rem;padding:8px 10px;border-radius:6px;inline-size:100%;background:#060913;color:var(--ink);border:1px solid var(--bdr-hi);">
+                  <option value="hue">Hue (Obsidian Dark · Cyan · &gt;=16px · Zero-Purple)</option>
+                  <option value="bob">Bob (Sunlit Light · Cyan · &gt;=22px · High-Contrast)</option>
+                  <option value="warm_comfort">Warm Comfort (Warm Paper · Emerald · &gt;=24px · Reduced Motion)</option>
+                </select>
+              </div>
+            </div>
+            <div class="row-item ok" id="id1-sig-box">Loading id1.is 16-byte ID1P signature &amp; Sec-GPC signal stats…</div>
+            <div class="btn-row">
+              <button type="button" class="act primary" id="btn-id1-save">Save id1.is Passport</button>
+              <button type="button" class="act" id="btn-id1-gpc">Sec-GPC: 1 Everywhere: ON ✓</button>
+              <button type="button" class="act" id="btn-id1-pref">X-ID1-Pref Signature: ON ✓</button>
+              <a class="btn" href="/api/id1/transparency/policy" target="_blank" rel="noopener">Export Portable id1.is Policy JSON</a>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>
               <span>Notification Console &amp; Active Shields</span>
               <span class="pill ok" id="rad-sse-pill">SSE CONNECTING…</span>
             </h2>
@@ -1302,11 +1330,13 @@ input[type="text"],input[type="email"],textarea{
         '<span class="muted">Reqs: '+String(s.total_requests)+' · Micro-beacons: '+String(s.post_beacons)+' ('+esc(s.burst_rate_pq)+') · Pixels/204: '+String(s.pixel_or_204_beacons)+' · Silenced: '+String(s.silenced_count)+kn+tp+bp+'</span>'+
         '<div class="btn-row">'+
           '<button type="button" class="act" data-site-exp="'+esc(s.host)+'">Explain (DeepSeek p/q)</button>'+
+          '<button type="button" class="act" data-site-att="'+esc(s.host)+'">Mint id1.is Receipt</button>'+
           '<button type="button" class="act" data-site-blk="'+esc(s.host)+'" data-site-isb="'+(s.is_blocked?"1":"0")+'">'+(s.is_blocked?"Unblock Host":"Block Host")+'</button>'+
         '</div></div>';
     }).join(""):'<div class="row-item"><strong>No inspected sites observed yet</strong></div>';
 
     for(const b of sEl.querySelectorAll("[data-site-exp]"))b.addEventListener("click",()=>explainHostWithDeepSeek(b.getAttribute("data-site-exp")));
+    for(const b of sEl.querySelectorAll("[data-site-att]"))b.addEventListener("click",()=>mintId1Receipt(b.getAttribute("data-site-att")));
     for(const b of sEl.querySelectorAll("[data-site-blk]"))b.addEventListener("click",()=>blockRadarHost(b.getAttribute("data-site-blk"),b.getAttribute("data-site-isb")!=="1"));
 
     const rEl=document.getElementById("rad-rules-list");
@@ -1323,12 +1353,58 @@ input[type="text"],input[type="email"],textarea{
     for(const b of rEl.querySelectorAll("[data-unsil-h]"))b.addEventListener("click",()=>silenceBeaconPath(b.getAttribute("data-unsil-h"),b.getAttribute("data-unsil-p"),false));
   }
 
+  let currentId1={handle:"hue.id1.is",preset:"hue",send_gpc_header:true,send_id1p_header:true};
+  let id1InputDirty=false;
+  document.getElementById("id1-handle").addEventListener("input",()=>{id1InputDirty=true;});
+
+  function renderId1Status(id1){
+    currentId1=id1;
+    if(!id1InputDirty && document.activeElement!==document.getElementById("id1-handle")){
+      document.getElementById("id1-handle").value=id1.handle||"hue.id1.is";
+    }
+    document.getElementById("id1-preset").value=id1.preset||"hue";
+    document.getElementById("id1-key-pill").textContent=id1.passport_key_id||"id1_local";
+    document.getElementById("btn-id1-gpc").textContent="Sec-GPC: 1 Everywhere: "+(id1.send_gpc_header?"ON ✓":"OFF");
+    document.getElementById("btn-id1-pref").textContent="X-ID1-Pref Signature: "+(id1.send_id1p_header?"ON ✓":"OFF");
+    const acks=(id1.sites_honoring_id1_ack||[]).length?(" · Honored by: "+esc(id1.sites_honoring_id1_ack.join(", "))):"";
+    document.getElementById("id1-sig-box").innerHTML=
+      "<strong>"+esc(id1.handle)+" · ID1P (16B CRC-16):</strong> <code>"+esc(id1.id1p_hex)+"</code><br>"+
+      "<span class='muted'>"+esc(id1.id1p_summary)+" · Sec-GPC sent: "+String(id1.gpc_headers_sent||0)+" · X-ID1-Pref sent: "+String(id1.id1p_headers_sent||0)+" · id1.is Passkey Bypass: PROTECTED ✓"+acks+"</span>";
+  }
+
+  async function patchId1(patch){
+    const r=await fetch("/api/id1/transparency/passport",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(patch)});
+    if(!r.ok)return;
+    const d=await r.json();
+    id1InputDirty=false;
+    if(d.id1)renderId1Status(d.id1);
+  }
+
+  async function mintId1Receipt(host){
+    const box=document.getElementById("rad-explain-box");
+    box.style.display="block";
+    box.textContent="Minting BLAKE3-sealed id1.is Transparency Receipt for "+host+"…";
+    try{
+      const r=await fetch("/api/id1/transparency/attest/"+encodeURIComponent(host));
+      const d=await r.json();
+      box.textContent="BLAKE3-Sealed id1.is Transparency Receipt (Zero Cookies · Zero PII · Portable Everywhere):\n\n"+JSON.stringify(d.receipt,null,2);
+    }catch(e){box.textContent="Receipt error: "+e;}
+  }
+
+  document.getElementById("btn-id1-save").addEventListener("click",()=>patchId1({
+    handle:document.getElementById("id1-handle").value.trim(),
+    preset:document.getElementById("id1-preset").value
+  }));
+  document.getElementById("btn-id1-gpc").addEventListener("click",()=>patchId1({send_gpc_header:!currentId1.send_gpc_header}));
+  document.getElementById("btn-id1-pref").addEventListener("click",()=>patchId1({send_id1p_header:!currentId1.send_id1p_header}));
+
   async function loadRadarStatus(){
     try{
       const r=await fetch("/api/transparency/status");
       if(!r.ok)return;
       const d=await r.json();
       if(d.radar)renderRadarStatus(d.radar);
+      if(d.id1)renderId1Status(d.id1);
     }catch(_e){}
   }
 

@@ -17,9 +17,11 @@
 //!    public HTTPS `audio/*` streams (radio, podcasts, MP3/FLAC/OGG/AAC tracks) pass live
 //!    through `PhoenixEnginePq` and cache on NVMe by BLAKE3 hash.
 
-use crate::edge_cache::EdgeCache;
+use crate::edge_cache::{CacheResponseHeaders, EdgeCache};
+use crate::id1_transparency::Id1TransparencyBridge;
 use crate::phoenix_gateway::{format_reduced_pq, PhoenixGateway, StreamOptions};
 use crate::transparency_radar::{extract_referer_host, TrafficObservation, TransparencyRadar};
+use futures::TryStreamExt;
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Bytes, Frame, Incoming};
 use hyper::header::{HeaderName, HeaderValue};
@@ -79,6 +81,7 @@ const PRIVACY_BYPASS_SUFFIXES: &[&str] = &[
     "appleid.apple.com",
     "login.microsoftonline.com",
     "login.live.com",
+    "id1.is",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -205,10 +208,12 @@ impl TlsInspectState {
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default();
 
-        // Upstream HTTP/HTTPS client: real verified TLS roots, NO auto-redirect, NO auto-decompress!
+        // Upstream HTTP/HTTPS client: real verified TLS roots, NO auto-redirect, NO auto-decompress,
+        // and connect/read timeouts (never a short total-body timeout that cuts off long video/SSE streams!).
         let upstream_client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(45))
+            .connect_timeout(Duration::from_secs(15))
+            .read_timeout(Duration::from_secs(60))
             .build()?;
 
         println!(
@@ -395,7 +400,38 @@ pub fn is_privacy_sensitive_host(host: &str) -> bool {
     false
 }
 
-pub fn is_phoenix_upgradable_audio(content_type: &str) -> bool {
+/// Only upgrade standalone direct audio streams (MP3/OGG/AAC/FLAC radio & podcasts).
+/// NEVER intercept MSE/DASH/HLS fragmented `audio/mp4`, `audio/webm`, `video/*`, or
+/// XHR/fetch chunks (`Sec-Fetch-Dest: empty`) used by Reddit (`v.redd.it`) & YouTube players!
+pub fn is_phoenix_upgradable_audio(
+    content_type: &str,
+    host: &str,
+    path_only: &str,
+    sec_fetch_dest: &str,
+) -> bool {
+    if sec_fetch_dest.eq_ignore_ascii_case("empty") || sec_fetch_dest.eq_ignore_ascii_case("video") {
+        return false;
+    }
+    let h = host.to_ascii_lowercase();
+    if h.ends_with("v.redd.it")
+        || h.ends_with("packaged-media.redd.it")
+        || h.ends_with("googlevideo.com")
+        || h.ends_with("ttvnw.net")
+    {
+        return false;
+    }
+    let p = path_only.to_ascii_lowercase();
+    if p.contains("dash_")
+        || p.contains("cmaf_")
+        || p.ends_with(".m4s")
+        || p.ends_with(".m4a")
+        || p.ends_with(".mp4")
+        || p.ends_with(".ts")
+        || p.ends_with(".m3u8")
+        || p.ends_with(".mpd")
+    {
+        return false;
+    }
     let ct = content_type
         .split(';')
         .next()
@@ -404,21 +440,49 @@ pub fn is_phoenix_upgradable_audio(content_type: &str) -> bool {
         .to_ascii_lowercase();
     matches!(
         ct.as_str(),
-        "audio/mpeg"
-            | "audio/mp3"
-            | "audio/ogg"
-            | "audio/aac"
-            | "audio/aacp"
-            | "audio/flac"
-            | "audio/x-flac"
-            | "audio/mp4"
-            | "audio/webm"
-            | "audio/opus"
+        "audio/mpeg" | "audio/mp3" | "audio/ogg" | "audio/aac" | "audio/aacp" | "audio/flac" | "audio/x-flac"
     )
 }
 
+fn is_streaming_media_type(content_type: &str) -> bool {
+    let ct = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    ct.starts_with("video/")
+        || ct == "audio/mp4"
+        || ct == "audio/webm"
+        || ct == "audio/mpegurl"
+        || ct == "application/vnd.apple.mpegurl"
+        || ct == "application/x-mpegurl"
+        || ct == "application/dash+xml"
+        || ct == "text/event-stream"
+}
+
+fn is_streaming_media_host_or_path(host: &str, path_only: &str) -> bool {
+    let h = host.to_ascii_lowercase();
+    if h.ends_with("v.redd.it")
+        || h.ends_with("packaged-media.redd.it")
+        || h.ends_with("googlevideo.com")
+        || h.ends_with("ttvnw.net")
+    {
+        return true;
+    }
+    let p = path_only.to_ascii_lowercase();
+    p.ends_with(".m3u8")
+        || p.ends_with(".mpd")
+        || p.ends_with(".m4s")
+        || p.ends_with(".mp4")
+        || p.ends_with(".ts")
+        || p.ends_with(".webm")
+}
+
 /// Terminate client TLS with a hardware-local leaf cert and serve RFC-compliant HTTP/1.1
-/// keep-alive requests with BLAKE3 HTTPS caching & optional on-the-fly Phoenix audio upgrade.
+/// keep-alive requests with CORS-safe BLAKE3 HTTPS caching, zero-buffer media streaming,
+/// `id1.is` preference signaling, & standalone Phoenix audio upgrade.
+#[allow(clippy::too_many_arguments)]
 pub async fn serve_inspected_tls_tunnel(
     client_stream: TcpStream,
     host: String,
@@ -427,6 +491,7 @@ pub async fn serve_inspected_tls_tunnel(
     edge_cache: Arc<EdgeCache>,
     phoenix: Arc<PhoenixGateway>,
     radar: Arc<TransparencyRadar>,
+    id1: Arc<Id1TransparencyBridge>,
 ) -> anyhow::Result<()> {
     let server_cfg = inspect.server_config_for_host(&host).await?;
     let acceptor = TlsAcceptor::from(server_cfg);
@@ -444,10 +509,13 @@ pub async fn serve_inspected_tls_tunnel(
         let cache_c = Arc::clone(&edge_cache);
         let phx_c = Arc::clone(&phoenix);
         let rad_c = Arc::clone(&radar);
+        let id1_c = Arc::clone(&id1);
         async move {
             Ok::<_, std::convert::Infallible>(
-                handle_inspected_http_request(req, &host_c, port, insp_c, cache_c, phx_c, rad_c)
-                    .await,
+                handle_inspected_http_request(
+                    req, &host_c, port, insp_c, cache_c, phx_c, rad_c, id1_c,
+                )
+                .await,
             )
         }
     });
@@ -477,6 +545,7 @@ fn error_response(status: StatusCode, msg: String) -> Response<BoxedBody> {
         .unwrap_or_else(|_| Response::new(full_body(Vec::new())))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_inspected_http_request(
     req: Request<Incoming>,
     host: &str,
@@ -485,6 +554,7 @@ async fn handle_inspected_http_request(
     edge_cache: Arc<EdgeCache>,
     phoenix: Arc<PhoenixGateway>,
     radar: Arc<TransparencyRadar>,
+    id1: Arc<Id1TransparencyBridge>,
 ) -> Response<BoxedBody> {
     inspect
         .https_requests_inspected
@@ -503,6 +573,13 @@ async fn handle_inspected_http_request(
         .or_else(|| req.headers().get(hyper::header::ORIGIN))
         .and_then(|v| v.to_str().ok())
         .and_then(extract_referer_host);
+    let has_origin = req.headers().contains_key(hyper::header::ORIGIN);
+    let sec_fetch_dest = req
+        .headers()
+        .get("sec-fetch-dest")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
 
     // 0. Instant Beacon-Path Silencing (drops mouse-move / telemetry beacons locally with 204
     //    so the parent site keeps working 100% normally without leaking behavioral packets!)
@@ -540,47 +617,62 @@ async fn handle_inspected_http_request(
         || req.headers().contains_key(hyper::header::COOKIE);
     let has_range = req.headers().contains_key(hyper::header::RANGE);
     let has_sensitive_query = url_has_sensitive_query(path_and_query);
-    let cache_eligible_req =
-        method == Method::GET && !has_auth_or_cookie && !has_range && !has_sensitive_query;
+    let is_streaming_req = is_streaming_media_host_or_path(host, &path_only);
+    let cache_eligible_req = method == Method::GET
+        && !has_auth_or_cookie
+        && !has_range
+        && !has_sensitive_query
+        && !is_streaming_req;
     let https_cache_key = EdgeCache::key_for_url(&format!("https-v1|{full_url}"));
 
-    // 1. Check BLAKE3 NVMe Edge Cache for public cacheable HTTPS GET
+    // 1. Check CORS-safe BLAKE3 NVMe Edge Cache for public cacheable HTTPS GET
     if cache_eligible_req {
         if let Some((meta, body)) = edge_cache.load_cached(&https_cache_key) {
-            inspect.https_cache_hits.fetch_add(1, Ordering::Relaxed);
-            inspect
-                .https_wan_bytes_saved
-                .fetch_add(meta.size_bytes, Ordering::Relaxed);
-            edge_cache.hits.fetch_add(1, Ordering::Relaxed);
-            edge_cache
-                .wan_bytes_saved
-                .fetch_add(meta.size_bytes, Ordering::Relaxed);
+            // CORS safety: if caller sent Origin: and cached entry lacks Access-Control-Allow-Origin,
+            // fall through to live fetch so cross-origin video/HLS/JS never fails CORS!
+            let cors_ok = !has_origin || meta.access_control_allow_origin.is_some();
+            if cors_ok && !is_streaming_media_type(&meta.content_type) {
+                inspect.https_cache_hits.fetch_add(1, Ordering::Relaxed);
+                inspect
+                    .https_wan_bytes_saved
+                    .fetch_add(meta.size_bytes, Ordering::Relaxed);
+                edge_cache.hits.fetch_add(1, Ordering::Relaxed);
+                edge_cache
+                    .wan_bytes_saved
+                    .fetch_add(meta.size_bytes, Ordering::Relaxed);
 
-            inspect
-                .record_event(InspectEvent {
-                    host: host.to_string(),
-                    method: method.to_string(),
-                    path_preview: truncate_path(&path_only, 60),
-                    status: 200,
-                    action: "HTTPS-CACHE-HIT".to_string(),
-                    content_type: meta.content_type.clone(),
-                    size_bytes: meta.size_bytes,
-                    unix_secs: crate::pdf_forms::now_unix_secs(),
-                })
-                .await;
+                inspect
+                    .record_event(InspectEvent {
+                        host: host.to_string(),
+                        method: method.to_string(),
+                        path_preview: truncate_path(&path_only, 60),
+                        status: 200,
+                        action: "HTTPS-CACHE-HIT".to_string(),
+                        content_type: meta.content_type.clone(),
+                        size_bytes: meta.size_bytes,
+                        unix_secs: crate::pdf_forms::now_unix_secs(),
+                    })
+                    .await;
 
-            let mut b = Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", meta.content_type)
-                .header("X-AyeFire-Inspect", "TIER3-LOCAL")
-                .header("X-AyeFire-Cache", "HTTPS-HIT")
-                .header("X-AyeFire-Blake3", meta.content_blake3);
-            if let Some(enc) = meta.content_encoding {
-                b = b.header("Content-Encoding", enc);
+                let mut b = Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", meta.content_type)
+                    .header("X-AyeFire-Inspect", "TIER3-LOCAL")
+                    .header("X-AyeFire-Cache", "HTTPS-HIT")
+                    .header("X-AyeFire-Blake3", meta.content_blake3);
+                if let Some(enc) = meta.content_encoding {
+                    b = b.header("Content-Encoding", enc);
+                }
+                if let Some(acao) = meta.access_control_allow_origin {
+                    b = b.header("Access-Control-Allow-Origin", acao);
+                }
+                if let Some(aceh) = meta.access_control_expose_headers {
+                    b = b.header("Access-Control-Expose-Headers", aceh);
+                }
+                return b
+                    .body(full_body(body))
+                    .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "build err".into()));
             }
-            return b
-                .body(full_body(body))
-                .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "build err".into()));
         }
     }
 
@@ -615,6 +707,26 @@ async fn handle_inspected_http_request(
         }
         up_req = up_req.header(name.as_str(), value.as_bytes());
     }
+
+    // Inject id1.is Sovereign Transparency & Presentation signals (never breaks CORS preflights!)
+    if method == Method::GET {
+        let is_doc_or_sovereign = sec_fetch_dest.eq_ignore_ascii_case("document")
+            || host.ends_with(".8b.is")
+            || host == "8b.is"
+            || host.ends_with(".i1.is")
+            || host.ends_with(".8a.is")
+            || host.ends_with(".pqtrn.com")
+            || host == "pqtrn.com";
+        let allow_id1p = is_doc_or_sovereign && !parts.headers.contains_key("x-id1-pref");
+        let (send_gpc, opt_id1p) = id1.outbound_signal_headers(allow_id1p).await;
+        if send_gpc && !parts.headers.contains_key("sec-gpc") {
+            up_req = up_req.header("Sec-GPC", "1");
+        }
+        if let Some(id1p_hex) = opt_id1p {
+            up_req = up_req.header("X-ID1-Pref", id1p_hex);
+        }
+    }
+
     let req_bytes_len = req_bytes.len() as u64;
     if !req_bytes.is_empty() {
         up_req = up_req.body(req_bytes.to_vec());
@@ -634,6 +746,9 @@ async fn handle_inspected_http_request(
                         .header("X-AyeFire-Cache", "OFFLINE-HIT");
                     if let Some(enc) = meta.content_encoding {
                         b = b.header("Content-Encoding", enc);
+                    }
+                    if let Some(acao) = meta.access_control_allow_origin {
+                        b = b.header("Access-Control-Allow-Origin", acao);
                     }
                     return b
                         .body(full_body(body))
@@ -660,6 +775,22 @@ async fn handle_inspected_http_request(
         .get(reqwest::header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+    let acao_val = up_resp
+        .headers()
+        .get(reqwest::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let aceh_val = up_resp
+        .headers()
+        .get(reqwest::header::ACCESS_CONTROL_EXPOSE_HEADERS)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let vary_origin = up_resp
+        .headers()
+        .get(reqwest::header::VARY)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_ascii_lowercase().contains("origin"))
+        .unwrap_or(false);
     let cache_control = up_resp
         .headers()
         .get(reqwest::header::CACHE_CONTROL)
@@ -667,14 +798,19 @@ async fn handle_inspected_http_request(
         .unwrap_or("")
         .to_ascii_lowercase();
     let has_set_cookie = up_resp.headers().contains_key(reqwest::header::SET_COOKIE);
+    let upstream_content_len = up_resp.content_length();
 
-    // 3. On-the-Fly Zero-Float Phoenix Audio Upgrade for HTTPS `audio/*` streams!
+    if up_resp.headers().contains_key("x-id1-pref-ack") {
+        id1.record_site_honored_id1(host).await;
+    }
+
+    // 3. On-the-Fly Zero-Float Phoenix Audio Upgrade (strictly standalone audio streams; NEVER MSE video!)
     if inspect.auto_phoenix_audio.load(Ordering::Relaxed)
         && method == Method::GET
         && status == StatusCode::OK
         && !has_range
         && !has_auth_or_cookie
-        && is_phoenix_upgradable_audio(&content_type)
+        && is_phoenix_upgradable_audio(&content_type, host, &path_only, &sec_fetch_dest)
     {
         let preset_name = inspect.phoenix_preset.read().await.clone();
         let rate = inspect.phoenix_rate.load(Ordering::Relaxed) as u32;
@@ -755,7 +891,99 @@ async fn handle_inspected_http_request(
         return error_response(StatusCode::BAD_GATEWAY, "Phoenix audio upgrade failed".into());
     }
 
-    // 4. Copy response headers & body cleanly
+    // 4. Decide Zero-Buffer Streaming vs Small Cacheable Asset Buffering!
+    let resp_private = cache_control.contains("private") || cache_control.contains("no-store");
+    let cors_cache_safe = match acao_val.as_deref() {
+        Some("*") => true,
+        Some(_) => false, // origin-specific ACAO must never be served to other origins
+        None => !has_origin && !vary_origin,
+    };
+    let is_media_or_stream = has_range
+        || is_streaming_req
+        || status == StatusCode::PARTIAL_CONTENT
+        || is_streaming_media_type(&content_type)
+        || upstream_content_len.is_none_or(|len| len > 4 * 1024 * 1024);
+
+    let can_cache_small = cache_eligible_req
+        && status == StatusCode::OK
+        && !resp_private
+        && !has_set_cookie
+        && cors_cache_safe
+        && !is_media_or_stream;
+
+    // 4a. Zero-Buffer Streaming Path (video/*, HLS/DASH, Range 206, SSE, >4MiB, POST, CORS-specific)
+    if !can_cache_small {
+        let mut resp_builder = Response::builder()
+            .status(status)
+            .header("X-AyeFire-Inspect", "TIER3-LOCAL")
+            .header("X-AyeFire-Cache", "STREAM");
+
+        for (name, val) in up_resp.headers() {
+            let low = name.as_str();
+            if matches!(
+                low,
+                "connection"
+                    | "keep-alive"
+                    | "transfer-encoding"
+                    | "proxy-authenticate"
+                    | "proxy-authorization"
+                    | "te"
+                    | "trailers"
+                    | "upgrade"
+                    | "alt-svc"
+            ) {
+                continue;
+            }
+            if let (Ok(hn), Ok(hv)) = (
+                HeaderName::from_bytes(name.as_str().as_bytes()),
+                HeaderValue::from_bytes(val.as_bytes()),
+            ) {
+                resp_builder = resp_builder.header(hn, hv);
+            }
+        }
+
+        let est_bytes = upstream_content_len.unwrap_or(0);
+        radar
+            .observe_request(TrafficObservation {
+                host: host.to_string(),
+                referer_host,
+                method: method.to_string(),
+                path_only: path_only.clone(),
+                status: status_u16,
+                req_bytes: req_bytes_len,
+                resp_bytes: est_bytes,
+                content_type: content_type.clone(),
+            })
+            .await;
+
+        inspect
+            .record_event(InspectEvent {
+                host: host.to_string(),
+                method: method.to_string(),
+                path_preview: truncate_path(&path_only, 60),
+                status: status_u16,
+                action: if is_streaming_media_type(&content_type) || status == StatusCode::PARTIAL_CONTENT {
+                    "MEDIA-STREAM".to_string()
+                } else {
+                    "PASS".to_string()
+                },
+                content_type,
+                size_bytes: est_bytes,
+                unix_secs: crate::pdf_forms::now_unix_secs(),
+            })
+            .await;
+
+        let stream = up_resp
+            .bytes_stream()
+            .map_ok(Frame::data)
+            .map_err(|e| std::io::Error::other(e.to_string()));
+        let body: BoxedBody = StreamBody::new(stream).boxed();
+        return resp_builder
+            .body(body)
+            .unwrap_or_else(|_| error_response(StatusCode::INTERNAL_SERVER_ERROR, "stream build err".into()));
+    }
+
+    // 4b. Cacheable Public Small Asset Path (images, JS, CSS, fonts, JSON, PDFs <= 4 MiB)
     let mut resp_builder = Response::builder()
         .status(status)
         .header("X-AyeFire-Inspect", "TIER3-LOCAL");
@@ -773,6 +1001,7 @@ async fn handle_inspected_http_request(
                 | "te"
                 | "trailers"
                 | "upgrade"
+                | "alt-svc"
         ) {
             continue;
         }
@@ -794,22 +1023,19 @@ async fn handle_inspected_http_request(
         }
     };
 
-    let resp_private = cache_control.contains("private") || cache_control.contains("no-store");
-    let should_cache = cache_eligible_req
-        && status == StatusCode::OK
-        && !resp_private
-        && !has_set_cookie
-        && !resp_bytes.is_empty()
-        && resp_bytes.len() <= MAX_HTTPS_CACHE_BYTES;
-
+    let should_cache = !resp_bytes.is_empty() && resp_bytes.len() <= MAX_HTTPS_CACHE_BYTES;
     let action = if should_cache {
         inspect.https_cache_misses.fetch_add(1, Ordering::Relaxed);
         edge_cache.misses.fetch_add(1, Ordering::Relaxed);
-        let _ = edge_cache.store_cached_with_encoding(
+        let _ = edge_cache.store_cached_with_headers(
             &https_cache_key,
             &full_url,
             &content_type,
-            content_encoding.as_deref(),
+            CacheResponseHeaders {
+                content_encoding: content_encoding.as_deref(),
+                access_control_allow_origin: acao_val.as_deref(),
+                access_control_expose_headers: aceh_val.as_deref(),
+            },
             &resp_bytes,
         );
         resp_builder = resp_builder.header("X-AyeFire-Cache", "HTTPS-MISS");
@@ -1027,9 +1253,39 @@ mod tests {
                 .unwrap();
         assert!(exp > now);
         assert!(is_privacy_sensitive_host("secure.chase.com"));
+        assert!(is_privacy_sensitive_host("hue.id1.is"));
         assert!(!is_privacy_sensitive_host("news.ycombinator.com"));
-        assert!(is_phoenix_upgradable_audio("audio/mpeg; charset=binary"));
-        assert!(!is_phoenix_upgradable_audio("text/html"));
+        assert!(is_phoenix_upgradable_audio(
+            "audio/mpeg; charset=binary",
+            "stream.radio.org",
+            "/live.mp3",
+            "audio"
+        ));
+        // Never hijack Reddit DASH/MSE video audio segments or cache HLS/CMAF playlists!
+        assert!(!is_phoenix_upgradable_audio(
+            "audio/mp4",
+            "v.redd.it",
+            "/abc123/DASH_AUDIO_128.mp4",
+            "empty"
+        ));
+        assert!(is_streaming_media_host_or_path(
+            "v.redd.it",
+            "/7i1urpm63f3i1/CMAF_480.m3u8"
+        ));
+        assert!(is_streaming_media_host_or_path(
+            "cdn.example.org",
+            "/video/chunk.m4s"
+        ));
+        assert!(!is_streaming_media_host_or_path(
+            "styles.redditmedia.com",
+            "/icon.webp"
+        ));
+        assert!(!is_phoenix_upgradable_audio(
+            "text/html",
+            "example.org",
+            "/",
+            "document"
+        ));
         let _ = fs::remove_dir_all(&tmp);
     }
 }

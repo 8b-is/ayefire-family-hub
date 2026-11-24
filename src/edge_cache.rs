@@ -13,6 +13,7 @@
 //! - **Exact integer accounting**: Reduced `p/q` hit ratios, BLAKE3 integrity keys, C64-bounded
 //!   disk budget with deterministic oldest-first eviction.
 
+use crate::id1_transparency::Id1TransparencyBridge;
 use crate::phoenix_gateway::{format_reduced_pq, PhoenixGateway};
 use crate::sanctuary_dns;
 use crate::tls_inspect::{is_privacy_sensitive_host, InspectEvent, TlsInspectState};
@@ -43,6 +44,10 @@ pub struct CachedObjectMeta {
     pub content_type: String,
     #[serde(default)]
     pub content_encoding: Option<String>,
+    #[serde(default)]
+    pub access_control_allow_origin: Option<String>,
+    #[serde(default)]
+    pub access_control_expose_headers: Option<String>,
     pub content_blake3: String,
     pub size_bytes: u64,
     pub cached_unix_secs: u64,
@@ -85,6 +90,13 @@ pub struct EdgeFetchResult {
     pub blake3_key: String,
     pub content_blake3: String,
     pub body: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CacheResponseHeaders<'a> {
+    pub content_encoding: Option<&'a str>,
+    pub access_control_allow_origin: Option<&'a str>,
+    pub access_control_expose_headers: Option<&'a str>,
 }
 
 pub struct EdgeCache {
@@ -179,15 +191,15 @@ impl EdgeCache {
         content_type: &str,
         body: &[u8],
     ) -> anyhow::Result<CachedObjectMeta> {
-        self.store_cached_with_encoding(key, url, content_type, None, body)
+        self.store_cached_with_headers(key, url, content_type, CacheResponseHeaders::default(), body)
     }
 
-    pub fn store_cached_with_encoding(
+    pub fn store_cached_with_headers(
         &self,
         key: &str,
         url: &str,
         content_type: &str,
-        content_encoding: Option<&str>,
+        headers: CacheResponseHeaders<'_>,
         body: &[u8],
     ) -> anyhow::Result<CachedObjectMeta> {
         if body.len() as u64 > MAX_SINGLE_OBJECT_BYTES {
@@ -200,7 +212,11 @@ impl EdgeCache {
             url: url.to_string(),
             host,
             content_type: content_type.to_string(),
-            content_encoding: content_encoding.map(|s| s.to_string()),
+            content_encoding: headers.content_encoding.map(|s| s.to_string()),
+            access_control_allow_origin: headers.access_control_allow_origin.map(|s| s.to_string()),
+            access_control_expose_headers: headers
+                .access_control_expose_headers
+                .map(|s| s.to_string()),
             content_blake3,
             size_bytes: body.len() as u64,
             cached_unix_secs: crate::pdf_forms::now_unix_secs(),
@@ -440,6 +456,7 @@ pub async fn spawn_http_cache_proxy(
     inspect: Arc<TlsInspectState>,
     phoenix: Arc<PhoenixGateway>,
     radar: Arc<TransparencyRadar>,
+    id1: Arc<Id1TransparencyBridge>,
 ) -> anyhow::Result<()> {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), cache.proxy_port);
     let listener = TcpListener::bind(addr).await?;
@@ -457,8 +474,9 @@ pub async fn spawn_http_cache_proxy(
         let i = Arc::clone(&inspect);
         let p = Arc::clone(&phoenix);
         let r = Arc::clone(&radar);
+        let id1_c = Arc::clone(&id1);
         tokio::spawn(async move {
-            let _ = handle_proxy_conn(stream, c, i, p, r).await;
+            let _ = handle_proxy_conn(stream, c, i, p, r, id1_c).await;
         });
     }
 }
@@ -469,6 +487,7 @@ async fn handle_proxy_conn(
     inspect: Arc<TlsInspectState>,
     phoenix: Arc<PhoenixGateway>,
     radar: Arc<TransparencyRadar>,
+    id1: Arc<Id1TransparencyBridge>,
 ) -> anyhow::Result<()> {
     let mut reader = BufReader::new(stream);
     let mut req_line = String::new();
@@ -565,6 +584,7 @@ async fn handle_proxy_conn(
                 cache,
                 phoenix,
                 radar,
+                id1,
             )
             .await;
             return Ok(());

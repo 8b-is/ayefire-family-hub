@@ -9,6 +9,7 @@
 mod deepseek_pq;
 mod edge_cache;
 mod gateway_status;
+mod id1_transparency;
 mod ipp_printer;
 mod pdf_forms;
 mod phoenix_gateway;
@@ -1122,9 +1123,98 @@ fn default_true() -> bool {
     true
 }
 
+#[derive(Deserialize)]
+struct Id1PassportPatchPayload {
+    #[serde(default)]
+    handle: Option<String>,
+    #[serde(default)]
+    preset: Option<String>,
+    #[serde(default)]
+    send_gpc_header: Option<bool>,
+    #[serde(default)]
+    send_id1p_header: Option<bool>,
+}
+
+async fn id1_passport_get_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let st = state.id1.status().await;
+    Json(serde_json::json!({ "ok": true, "id1": st }))
+}
+
+async fn id1_passport_post_handler(
+    State(state): State<FamilySharedState>,
+    Json(req): Json<Id1PassportPatchPayload>,
+) -> impl IntoResponse {
+    let st = state
+        .id1
+        .update_config(
+            req.handle,
+            req.preset,
+            req.send_gpc_header,
+            req.send_id1p_header,
+        )
+        .await;
+    Json(serde_json::json!({ "ok": true, "id1": st }))
+}
+
+async fn id1_attest_host_handler(
+    State(state): State<FamilySharedState>,
+    AxumPath(host): AxumPath<String>,
+) -> impl IntoResponse {
+    let norm = transparency_radar::normalize_host(&host);
+    let st = state.radar.status().await;
+    let site = st
+        .sites
+        .into_iter()
+        .find(|s| s.host == norm)
+        .unwrap_or(transparency_radar::SiteTransparencyView {
+            host: norm.clone(),
+            trust_of_20: 20,
+            trust_pq: "1/1".to_string(),
+            verdict: "UNOBSERVED".to_string(),
+            total_requests: 0,
+            post_beacons: 0,
+            pixel_or_204_beacons: 0,
+            burst_events_10s: 0,
+            burst_rate_pq: "0 pkt/10s".to_string(),
+            silenced_count: 0,
+            third_party_hosts: Vec::new(),
+            called_by_sites: Vec::new(),
+            sample_beacon_paths: Vec::new(),
+            known_tracker_note: transparency_radar::known_tracker_reason(&norm)
+                .map(|s| s.to_string()),
+            is_blocked: false,
+            last_seen_unix: pdf_forms::now_unix_secs(),
+        });
+    let receipt = state.id1.attest_site(&site).await;
+    Json(serde_json::json!({ "ok": true, "receipt": receipt }))
+}
+
+async fn id1_export_policy_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let policy = state.id1.export_portable_policy(&state.radar).await;
+    Json(serde_json::json!({ "ok": true, "policy": policy }))
+}
+
+async fn id1_import_policy_handler(
+    State(state): State<FamilySharedState>,
+    Json(policy): Json<id1_transparency::Id1PortablePolicy>,
+) -> impl IntoResponse {
+    let (hosts, paths) = state
+        .id1
+        .import_portable_policy(&policy, &state.radar)
+        .await;
+    let st = state.id1.status().await;
+    Json(serde_json::json!({
+        "ok": true,
+        "imported_blocked_hosts": hosts,
+        "imported_silenced_paths": paths,
+        "id1": st
+    }))
+}
+
 async fn transparency_status_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
     let st = state.radar.status().await;
-    Json(serde_json::json!({ "ok": true, "radar": st }))
+    let id1 = state.id1.status().await;
+    Json(serde_json::json!({ "ok": true, "radar": st, "id1": id1 }))
 }
 
 async fn transparency_events_sse_handler(
@@ -1439,6 +1529,7 @@ async fn main() -> anyhow::Result<()> {
     let phoenix = phoenix_gateway::PhoenixGateway::load_from_env();
     let edge_cache = edge_cache::EdgeCache::load_from_env();
     let inspect = tls_inspect::TlsInspectState::load_or_create_from_env()?;
+    let id1 = id1_transparency::Id1TransparencyBridge::load_from_env();
 
     let state = FamilySharedState {
         spool_dir,
@@ -1457,6 +1548,7 @@ async fn main() -> anyhow::Result<()> {
         edge_cache: edge_cache.clone(),
         inspect: inspect.clone(),
         radar: radar.clone(),
+        id1: id1.clone(),
         http_port,
     };
 
@@ -1473,10 +1565,16 @@ async fn main() -> anyhow::Result<()> {
     let proxy_inspect = inspect.clone();
     let proxy_phoenix = phoenix.clone();
     let proxy_radar = radar.clone();
+    let proxy_id1 = id1.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            edge_cache::spawn_http_cache_proxy(proxy_cache, proxy_inspect, proxy_phoenix, proxy_radar)
-                .await
+        if let Err(e) = edge_cache::spawn_http_cache_proxy(
+            proxy_cache,
+            proxy_inspect,
+            proxy_phoenix,
+            proxy_radar,
+            proxy_id1,
+        )
+        .await
         {
             eprintln!("[EDGE-PROXY] proxy exited: {e}");
         }
@@ -1550,6 +1648,23 @@ async fn main() -> anyhow::Result<()> {
             post(transparency_test_alert_handler),
         )
         .route("/api/transparency/explain", post(transparency_explain_handler))
+        // id1.is Sovereign Transparency Passport, 16-Byte ID1P & Portable Signed Policy Sync
+        .route(
+            "/api/id1/transparency/passport",
+            get(id1_passport_get_handler).post(id1_passport_post_handler),
+        )
+        .route(
+            "/api/id1/transparency/attest/:host",
+            get(id1_attest_host_handler),
+        )
+        .route(
+            "/api/id1/transparency/policy",
+            get(id1_export_policy_handler),
+        )
+        .route(
+            "/api/id1/transparency/import-policy",
+            post(id1_import_policy_handler),
+        )
         .route("/api/cache/fetch", get(edge_cache_fetch_handler))
         .route("/api/cache/warm", post(edge_cache_warm_handler))
         .route("/api/cache/objects", get(edge_cache_objects_handler))

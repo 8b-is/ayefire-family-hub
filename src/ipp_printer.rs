@@ -7,6 +7,7 @@
 //! and speaks a friendly confirmation aloud (unless Incognito is active).
 
 use crate::edge_cache::EdgeCache;
+use crate::id1_transparency::Id1TransparencyBridge;
 use crate::pdf_forms::{self, HouseholdFamilyProfile, PrintedFormJob};
 use crate::phoenix_gateway::PhoenixGateway;
 use crate::sanctuary_dns::SanctuaryDnsConfig;
@@ -49,6 +50,7 @@ pub struct FamilySharedState {
     pub edge_cache: Arc<EdgeCache>,
     pub inspect: Arc<TlsInspectState>,
     pub radar: Arc<TransparencyRadar>,
+    pub id1: Arc<Id1TransparencyBridge>,
     pub http_port: u16,
 }
 
