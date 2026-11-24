@@ -71,9 +71,13 @@ header.top{
   outline:3px solid var(--cyan);outline-offset:2px;
 }
 
-/* Panels share one grid track so hidden="until-found" never leaves gap strips */
-.panels-grid{display:grid;}
+/* Panels share one grid track so hidden="until-found" never leaves gap strips.
+   In Firefox, content-visibility:hidden panels in grid-area:1/1 still sit above earlier
+   siblings in hit-testing unless hidden panels explicitly set pointer-events:none + z-index:0! */
+.panels-grid{display:grid;position:relative;}
 .panels-grid > [role="tabpanel"]{grid-area:1/1;}
+.panels-grid > [role="tabpanel"][hidden]{pointer-events:none;z-index:0;}
+.panels-grid > [role="tabpanel"]:not([hidden]){position:relative;z-index:2;pointer-events:auto;}
 /* Padding/border/background live strictly on .panel-inner (never on [role="tabpanel"]) */
 .panel-inner{
   background:var(--panel);border:1px solid var(--bdr);border-block-start:0;
@@ -110,8 +114,9 @@ header.top{
   display:inline-flex;align-items:center;gap:6px;
 }
 .btn.primary,button.act.primary{background:var(--mint);border-color:var(--mint);color:#05060a;font-weight:700;}
-.btn:hover,button.act:hover{border-color:var(--cyan);color:var(--cyan);}
+.btn:hover,button.act:hover{border-color:var(--cyan);color:var(--cyan);background:#162238;}
 .btn.primary:hover,button.act.primary:hover{background:var(--cyan);border-color:var(--cyan);color:#05060a;}
+.btn:active,button.act:active{transform:translateY(1px);}
 
 input[type="text"],input[type="email"],textarea{
   font:inherit;font-size:0.84rem;padding:8px 10px;border-radius:6px;inline-size:100%;
@@ -1113,6 +1118,7 @@ input[type="text"],input[type="email"],textarea{
   loadPhoenixTracks();
   loadGatewayStatus();
   setInterval(loadPhoenixStatus,4000);
+  setInterval(loadGatewayStatus,4000);
 })();
 </script>
 </body>
