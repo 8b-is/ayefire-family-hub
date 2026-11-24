@@ -227,7 +227,7 @@ pub fn generate_sample_athletic_form_pdf(out_path: &Path) -> anyhow::Result<()> 
 /// Generate a crisp filled summary/overlay PDF using pure-Rust `oxidize-pdf` (zero floats in logic).
 pub fn render_filled_form_pdf(job: &PrintedFormJob, out_path: &Path) -> anyhow::Result<()> {
     let mut doc = Document::new();
-    doc.set_title(&format!("{} — AyeFire Filled Draft", job.title));
+    doc.set_title(format!("{} — AyeFire Filled Draft", job.title));
     doc.set_author("AyeFire Sovereign Family Assistant (Local-Only)");
 
     let mut page = Page::letter();

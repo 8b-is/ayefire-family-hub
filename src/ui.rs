@@ -140,22 +140,82 @@ input[type="text"],input[type="email"],textarea{
       <span class="pill mint" id="hdr-pqm">🧠 DEEPSEEK p/q VERIFIED</span>
     </div>
     <nav class="nav-links" aria-label="AyeFire links">
+      <a class="pill gold" href="http://127.0.0.1:8080/" target="_blank" rel="noopener">Phoenix Audio (:8080)</a>
       <a class="pill" href="http://172.16.47.110/" target="_blank" rel="noopener">Bare-Metal AyeOS (172.16.47.110)</a>
-      <a class="pill" href="https://i1.is/ayefire?home=aye" target="_blank" rel="noopener">i1.is Live SSE Console</a>
+      <a class="pill" href="/api/library/status">Library JSON</a>
       <a class="pill" href="/api/family/status">Status JSON</a>
     </nav>
   </header>
 
   <section class="tabs-shell">
     <div class="tablist" focusgroup="tablist nomemory" aria-label="AyeFire family care modules">
-      <button type="button" id="tab-kitchen" aria-selected="true" focusgroupstart>Alex’s Kitchen (zenUltraCooker)</button>
+      <button type="button" id="tab-sanctuary" aria-selected="true" focusgroupstart>Sanctuary Library (Offline Internet)</button>
+      <button type="button" id="tab-kitchen" aria-selected="false">Alex’s Kitchen (zenUltraCooker)</button>
       <button type="button" id="tab-forms" aria-selected="false">Print-to-Aye Forms (IPP :__IPP_PORT__)</button>
       <button type="button" id="tab-brain" aria-selected="false">DeepSeek p/q Local Brain</button>
     </div>
 
     <div class="panels-grid">
+      <!-- TAB 0: SANCTUARY LIBRARY (OFFLINE INTERNET OF EDUCATION, UNDERSTANDING, LOVE, RESPECT) -->
+      <div role="tabpanel" id="panel-sanctuary" aria-labelledby="tab-sanctuary">
+        <div class="panel-inner">
+          <div class="row-item ok">
+            <strong>AyeFire Sanctuary Internet — Education · Understanding · Love · Respect · Space ({&lt;3,&lt;3,&lt;3}+1)</strong>
+            <span class="muted">100% offline-ready local knowledge portal. Zero cloud trackers, zero external CDNs, zero reading-history surveillance, deterministic zero-float integer search.</span>
+          </div>
+
+          <div class="kpi-row">
+            <div class="kpi"><span>Indexed Manuscripts</span><strong id="lib-docs">—</strong></div>
+            <div class="kpi"><span>Offline Corpus Size</span><strong class="cyan" id="lib-size">—</strong></div>
+            <div class="kpi"><span>Search Terms Indexed</span><strong class="mint" id="lib-terms">—</strong></div>
+            <div class="kpi"><span>Privacy &amp; Integrity</span><strong class="ok" id="lib-merkle">ZERO TRACKING ✓</strong></div>
+          </div>
+
+          <div class="card">
+            <h2>
+              <span>Explore Learning Paths &amp; Search Offline Library</span>
+              <span class="pill ok">ZERO-FLOAT INTEGER RANKING</span>
+            </h2>
+            <div class="btn-row" id="lib-topic-pills"></div>
+            <div class="grid-2">
+              <div class="field">
+                <label for="lib-query">Search papers, books, Ultralove Editions, specs, or concepts (works completely air-gapped):</label>
+                <input id="lib-query" type="text" placeholder="e.g. spherepop, Six Pillars, active geodesic inference, dark energy, exact integer, cryptography">
+              </div>
+              <div class="field">
+                <label for="lib-collection">Filter Collection:</label>
+                <select id="lib-collection" style="font:inherit;font-size:0.84rem;padding:8px 10px;border-radius:6px;inline-size:100%;background:#060913;color:var(--ink);border:1px solid var(--bdr-hi);">
+                  <option value="all">All Collections (Sovereign Library + Downloads + standardgalactic)</option>
+                  <option value="sovereign-library">Sovereign Library (Books, Ultralove Editions, Six Pillars)</option>
+                  <option value="downloads-papers">Downloads Papers (PDFs, LaTeX, Whitepapers)</option>
+                  <option value="standardgalactic">Flyxion / standardgalactic Canonical Research</option>
+                </select>
+              </div>
+            </div>
+            <div class="btn-row">
+              <button type="button" class="act primary" id="btn-lib-search">Search Offline Library</button>
+              <button type="button" class="act" id="btn-lib-ask">Ask Local Tutor (Cited DeepSeek p/q)</button>
+              <button type="button" class="act" id="btn-lib-reset">Browse Curated Shelf</button>
+              <span class="muted" id="lib-status" style="font-size:0.78rem"></span>
+            </div>
+            <div class="answer-box" id="lib-tutor-box" style="display:none"></div>
+          </div>
+
+          <div class="grid-2">
+            <article class="card">
+              <h2><span>Matching Manuscripts &amp; Books</span><span class="pill cyan" id="lib-hit-count">0 shown</span></h2>
+              <div class="list" id="lib-results"></div>
+            </article>
+            <article class="card">
+              <h2><span>Offline PDF Reading Shelf (~/Downloads)</span><span class="pill gold">LOCAL VIEWER</span></h2>
+              <div class="list" id="lib-pdfs"></div>
+            </article>
+          </div>
+        </div>
+      </div>
+
       <!-- TAB 1: ALEX'S KITCHEN (zenUltraCooker) -->
-      <div role="tabpanel" id="panel-kitchen" aria-labelledby="tab-kitchen">
+      <div role="tabpanel" id="panel-kitchen" aria-labelledby="tab-kitchen" hidden="until-found">
         <div class="panel-inner">
           <div class="kpi-row" id="kitchen-kpis">
             <div class="kpi"><span>Tonight’s Headcount</span><strong id="k-headcount">—</strong></div>
@@ -271,10 +331,7 @@ input[type="text"],input[type="email"],textarea{
 <script>
 (function(){
   "use strict";
-  // Conditionally load focusgroup polyfill ONLY when native focusgroup support is missing
-  if(!Object.hasOwn(HTMLElement.prototype,"focusGroup")){
-    import("https://unpkg.com/@microsoft/focusgroup-polyfill").then(m=>{if(m&&m.polyfill)m.polyfill();}).catch(()=>{});
-  }
+  // 100% air-gap safe: zero external CDN/polyfill network fetches.
 
   // Accessible Tabs (modern-web-guidance: tabs)
   const tablist=document.querySelector(".tablist");
@@ -534,7 +591,127 @@ input[type="text"],input[type="email"],textarea{
     if(d.ok)loadAll();
   });
 
+  // --- Sanctuary Offline Library ---
+  let activeTopic="all";
+
+  async function loadLibraryStatus(){
+    try{
+      const r=await fetch("/api/library/status");
+      if(!r.ok)return;
+      const d=await r.json();
+      const lib=d.library||{};
+      document.getElementById("lib-docs").textContent=String(lib.total_docs||0);
+      document.getElementById("lib-size").textContent=String(lib.total_mib||0)+" MiB";
+      document.getElementById("lib-terms").textContent=String(lib.total_indexed_terms||0);
+      document.getElementById("lib-merkle").textContent="BLAKE3 "+String(lib.merkle_root_blake3||"").slice(0,12)+"… ✓";
+
+      const pills=document.getElementById("lib-topic-pills");
+      const allTopics=[{slug:"all",label:"All Learning Paths",count:lib.total_docs||0}].concat(lib.topics||[]);
+      pills.innerHTML=allTopics.map(t=>
+        '<button type="button" class="act'+(activeTopic===t.slug?" primary":"")+'" data-topic="'+esc(t.slug)+'">'+
+        esc(t.label)+' ('+esc(t.count)+')</button>'
+      ).join("");
+      for(const btn of pills.querySelectorAll("button[data-topic]")){
+        btn.addEventListener("click",()=>{
+          activeTopic=btn.dataset.topic||"all";
+          for(const b of pills.querySelectorAll("button[data-topic]")){
+            b.classList.toggle("primary",b.dataset.topic===activeTopic);
+          }
+          runLibrarySearch();
+        });
+      }
+
+      const pdfHost=document.getElementById("lib-pdfs");
+      const pdfs=lib.pdfs||[];
+      pdfHost.innerHTML=pdfs.length?pdfs.map(p=>
+        '<div class="row-item ok"><strong>'+esc(p.title)+'</strong>'+
+        '<span class="muted">'+esc(p.filename)+' · '+String(BigInt(p.byte_len||0)/1024n)+' KiB</span>'+
+        '<div class="btn-row"><a class="btn" href="'+esc(p.url)+'" target="_blank">Open Offline PDF</a></div></div>'
+      ).join(""):'<div class="row-item"><strong>No local PDFs found in ~/Downloads.</strong></div>';
+    }catch(_e){}
+  }
+
+  async function runLibrarySearch(){
+    const q=(document.getElementById("lib-query").value||"").trim();
+    const col=document.getElementById("lib-collection").value||"all";
+    const st=document.getElementById("lib-status");
+    st.textContent="Searching locally…";
+    try{
+      const url="/api/library/search?q="+encodeURIComponent(q)+"&collection="+encodeURIComponent(col)+"&topic="+encodeURIComponent(activeTopic)+"&limit=24";
+      const r=await fetch(url);
+      const d=await r.json();
+      const hits=d.hits||[];
+      document.getElementById("lib-hit-count").textContent=String(hits.length)+" shown";
+      st.textContent=q?("Found "+hits.length+" local matches (zero cloud)"):"Showing curated local shelf";
+      renderLibraryHits(hits);
+    }catch(_e){
+      st.textContent="Local search error";
+    }
+  }
+
+  function renderLibraryHits(hits){
+    const host=document.getElementById("lib-results");
+    if(!hits.length){
+      host.innerHTML='<div class="row-item warn"><strong>No local matches for those terms.</strong><span class="muted">Try broader keywords or switch collection to All.</span></div>';
+      return;
+    }
+    host.innerHTML=hits.map(h=>{
+      const doc=h.doc||{};
+      const pdfLink=doc.pdf_name?('<a class="btn" href="/api/library/pdf/'+encodeURIComponent(doc.pdf_name)+'" target="_blank">PDF</a>'):"";
+      return '<div class="row-item">'+
+        '<strong><a href="/read/'+encodeURIComponent(doc.id)+'" style="color:var(--cyan);text-decoration:none">'+esc(doc.title)+'</a></strong>'+
+        '<span class="muted">'+esc(doc.collection)+' · '+esc(doc.repo)+' · topic: '+esc(doc.topic)+' · '+String(BigInt(doc.byte_len||0)/1024n)+' KiB'+(h.matched_terms?(' · score '+esc(h.score)):'')+'</span>'+
+        '<span style="font-size:0.81rem">'+esc(h.excerpt||doc.snippet)+'</span>'+
+        '<div class="btn-row"><a class="btn primary" href="/read/'+encodeURIComponent(doc.id)+'">Read Offline</a>'+pdfLink+'</div>'+
+        '</div>';
+    }).join("");
+  }
+
+  async function askLibraryTutor(){
+    const q=(document.getElementById("lib-query").value||"").trim();
+    if(!q)return;
+    const col=document.getElementById("lib-collection").value||"all";
+    const st=document.getElementById("lib-status");
+    const box=document.getElementById("lib-tutor-box");
+    box.style.display="block";
+    box.textContent="Searching offline Sanctuary Library & consulting local DeepSeek p/q…";
+    st.textContent="Grounded local tutor running…";
+    try{
+      const r=await fetch("/api/library/ask",{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({question:q,collection:col,topic:activeTopic})
+      });
+      const d=await r.json();
+      const cites=(d.citations||[]);
+      let txt=(d.reply||d.error||"No reply");
+      if(cites.length){
+        txt+="\n\n--- Cited Local Sources ---\n"+cites.map((c,i)=>
+          "["+(i+1)+"] "+(c.doc?c.doc.title:"")+" ("+(c.doc?c.doc.rel_path:"")+") -> /read/"+(c.doc?c.doc.id:"")
+        ).join("\n");
+      }
+      box.textContent=txt;
+      st.textContent=d.ai_available?"Local DeepSeek p/q answered with citations":"Offline excerpts retrieved (DeepSeek daemon resting)";
+      if(cites.length)renderLibraryHits(cites);
+    }catch(_e){
+      box.textContent="Could not reach local Sanctuary tutor endpoint.";
+      st.textContent="Local tutor error";
+    }
+  }
+
+  document.getElementById("btn-lib-search").addEventListener("click",runLibrarySearch);
+  document.getElementById("btn-lib-ask").addEventListener("click",askLibraryTutor);
+  document.getElementById("btn-lib-reset").addEventListener("click",()=>{
+    document.getElementById("lib-query").value="";
+    document.getElementById("lib-collection").value="all";
+    activeTopic="all";
+    document.getElementById("lib-tutor-box").style.display="none";
+    loadLibraryStatus().then(runLibrarySearch);
+  });
+  document.getElementById("lib-query").addEventListener("keydown",(e)=>{if(e.key==="Enter")runLibrarySearch();});
+  document.getElementById("lib-collection").addEventListener("change",runLibrarySearch);
+
   loadAll();
+  loadLibraryStatus().then(runLibrarySearch);
 })();
 </script>
 </body>

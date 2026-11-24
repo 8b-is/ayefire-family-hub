@@ -9,12 +9,14 @@
 mod deepseek_pq;
 mod ipp_printer;
 mod pdf_forms;
+mod sanctuary_library;
 mod ui;
 
 use axum::{
-    extract::{Multipart, Path as AxumPath, State},
-    http::{header, StatusCode},
-    response::{Html, IntoResponse, Json},
+    extract::{Multipart, Path as AxumPath, Query, State},
+    http::{header, HeaderValue, StatusCode},
+    middleware::{self, Next},
+    response::{Html, IntoResponse, Json, Response},
     routing::{get, post},
     Router,
 };
@@ -513,6 +515,190 @@ async fn save_profile_handler(
     (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
 }
 
+#[derive(Deserialize)]
+struct LibrarySearchQuery {
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    collection: Option<String>,
+    #[serde(default)]
+    topic: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn library_status_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "ok": true,
+        "library": state.library.status()
+    }))
+}
+
+async fn library_search_handler(
+    State(state): State<FamilySharedState>,
+    Query(params): Query<LibrarySearchQuery>,
+) -> impl IntoResponse {
+    let limit = params.limit.unwrap_or(24).clamp(1, 60);
+    let hits = state.library.search(
+        &params.q,
+        params.collection.as_deref(),
+        params.topic.as_deref(),
+        limit,
+    );
+    Json(serde_json::json!({
+        "ok": true,
+        "query": params.q,
+        "count": hits.len(),
+        "hits": hits
+    }))
+}
+
+async fn library_doc_json_handler(
+    State(state): State<FamilySharedState>,
+    AxumPath(id): AxumPath<u32>,
+) -> impl IntoResponse {
+    match state.library.read_doc(id) {
+        Some(full) => (StatusCode::OK, Json(serde_json::json!({ "ok": true, "document": full }))).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "ok": false, "error": "manuscript not found" }))).into_response(),
+    }
+}
+
+async fn library_reader_html_handler(
+    State(state): State<FamilySharedState>,
+    AxumPath(id): AxumPath<u32>,
+) -> impl IntoResponse {
+    match state.library.read_doc(id) {
+        Some(full) => (StatusCode::OK, Html(sanctuary_library::render_reader_html(&full))).into_response(),
+        None => (StatusCode::NOT_FOUND, Html("<h1>Manuscript not found</h1><p><a href=\"/\">Back to AyeFire Sanctuary</a></p>".to_string())).into_response(),
+    }
+}
+
+async fn library_pdf_handler(
+    State(state): State<FamilySharedState>,
+    AxumPath(name): AxumPath<String>,
+) -> impl IntoResponse {
+    match state.library.read_allowlisted_pdf(&name) {
+        Some((safe_name, bytes)) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/pdf".to_string()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!("inline; filename=\"{safe_name}\""),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "PDF not in offline Sanctuary allowlist").into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct LibraryAskPayload {
+    question: String,
+    #[serde(default)]
+    collection: Option<String>,
+    #[serde(default)]
+    topic: Option<String>,
+}
+
+async fn library_ask_handler(
+    State(state): State<FamilySharedState>,
+    Json(req): Json<LibraryAskPayload>,
+) -> impl IntoResponse {
+    let q = req.question.trim();
+    if q.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "ok": false, "error": "question cannot be empty" })),
+        );
+    }
+
+    let hits = state.library.search(
+        q,
+        req.collection.as_deref(),
+        req.topic.as_deref(),
+        4,
+    );
+
+    let mut context_block = String::new();
+    for (idx, h) in hits.iter().enumerate() {
+        context_block.push_str(&format!(
+            "[{}] {} ({} · {})\nExcerpt: {}\n\n",
+            idx + 1,
+            h.doc.title,
+            h.doc.collection,
+            h.doc.rel_path,
+            h.excerpt
+        ));
+    }
+
+    let sys = "You are Aye, a calm, respectful offline tutor inside the AyeFire Sanctuary Internet (Education, Understanding, Love, Respect, Space). Ground your answer ONLY in the provided local library excerpts, cite sources as [1], [2], etc., keep observations distinct from speculation, and never invent references.";
+    let prompt = if context_block.is_empty() {
+        format!(
+            "No exact local manuscript matched the query terms. Answer gently and honestly as a local offline tutor.\nQuestion: {q}"
+        )
+    } else {
+        format!(
+            "Local Sanctuary Library passages:\n{context_block}\nLearner question: {q}\nGive a clear, warm, accurate explanation citing [1]..[N] where relevant."
+        )
+    };
+
+    match deepseek_pq::generate_local_reply(
+        &state.llm_endpoint,
+        &state.llm_model,
+        sys,
+        &prompt,
+        280,
+    )
+    .await
+    {
+        Ok(reply) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "ai_available": true,
+                "reply": reply,
+                "citations": hits
+            })),
+        ),
+        Err(err) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ok": true,
+                "ai_available": false,
+                "ai_note": err,
+                "reply": "Local DeepSeek p/q inference daemon is currently resting — showing the exact matching passages from your offline Sanctuary Library below so you can read the primary sources directly.",
+                "citations": hits
+            })),
+        ),
+    }
+}
+
+async fn offline_sanctuary_headers(
+    req: axum::http::Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let mut resp = next.run(req).await;
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'self'; frame-ancestors 'self'",
+        ),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    resp
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let http_port: u16 = std::env::var("AYEFIRE_FAMILY_HTTP_PORT")
@@ -538,6 +724,17 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&spool_dir)?;
     let profile = pdf_forms::load_or_create_profile(&profile_path);
 
+    let library = Arc::new(sanctuary_library::SanctuaryLibrary::load_from_env());
+    let lib_st = library.status();
+    println!(
+        "[SANCTUARY-LIBRARY] docs={} terms={} size={}MiB pdfs={} merkle={}.. (offline=true no_tracking=true)",
+        lib_st.total_docs,
+        lib_st.total_indexed_terms,
+        lib_st.total_mib,
+        lib_st.pdfs.len(),
+        &lib_st.merkle_root_blake3[..lib_st.merkle_root_blake3.len().min(16)]
+    );
+
     let pq_status = deepseek_pq::inspect_local_pqm_bundle(&bundle_dir, &llm_endpoint, &llm_model);
     println!(
         "[DEEPSEEK-PQM] bundle_present={} matrices={}/{} size={}MiB merkle={}..",
@@ -559,6 +756,7 @@ async fn main() -> anyhow::Result<()> {
         forms: Arc::new(RwLock::new(VecDeque::with_capacity(32))),
         wall_oven_working: Arc::new(RwLock::new(false)),
         ipp_jobs_received: Arc::new(RwLock::new(0)),
+        library,
     };
 
     // Spawn Hue's Print-to-Aye IPP listener (ipp-ngest)
@@ -590,7 +788,14 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(index_handler))
+        .route("/library", get(index_handler))
+        .route("/read/:id", get(library_reader_html_handler))
         .route("/api/family/status", get(family_status_handler))
+        .route("/api/library/status", get(library_status_handler))
+        .route("/api/library/search", get(library_search_handler))
+        .route("/api/library/doc/:id", get(library_doc_json_handler))
+        .route("/api/library/ask", post(library_ask_handler))
+        .route("/api/library/pdf/:name", get(library_pdf_handler))
         .route("/api/kitchen/toggle-oven", post(toggle_oven_handler))
         .route("/api/kitchen/ask", post(ask_kitchen_handler))
         .route("/api/brain/ask", post(ask_brain_handler))
@@ -600,6 +805,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/forms/:id/filled.pdf", get(download_filled_pdf_handler))
         .route("/api/forms/:id/draft.eml", get(download_draft_eml_handler))
         .route("/api/profile", post(save_profile_handler))
+        .layer(middleware::from_fn(offline_sanctuary_headers))
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], http_port));
