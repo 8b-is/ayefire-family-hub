@@ -131,6 +131,24 @@ input[type="text"],input[type="email"],textarea{
   font-size:0.85rem;white-space:pre-wrap;overflow-wrap:anywhere;min-block-size:52px;
 }
 .muted{color:var(--muted);} .ok{color:var(--ok);} .gold{color:var(--gold);} .cyan{color:var(--cyan);} .mint{color:var(--mint);} .coral{color:var(--coral);}
+/* Live Accessible SSE Notification Toast Stack (Zero Purple) */
+.toast-stack{
+  position:fixed;inset-block-end:18px;inset-inline-end:18px;z-index:999;
+  display:grid;gap:10px;inline-size:min(420px,calc(100vw - 28px));pointer-events:none;
+}
+.toast{
+  pointer-events:auto;background:var(--elev);border:1px solid var(--mint);
+  border-inline-start:4px solid var(--gold);border-radius:10px;padding:12px 14px;
+  box-shadow:0 10px 28px rgba(0,0,0,0.55);display:grid;gap:6px;font-size:0.82rem;
+}
+.toast.high{border-inline-start-color:var(--coral);border-color:var(--coral);}
+.toast.ok{border-inline-start-color:var(--ok);border-color:var(--ok);}
+.toast-head{display:flex;justify-content:space-between;align-items:center;gap:8px;}
+.toast-close{
+  background:transparent;border:1px solid var(--bdr-hi);color:var(--muted);
+  border-radius:6px;padding:2px 7px;cursor:pointer;font:inherit;font-size:0.75rem;
+}
+.toast-close:hover{color:var(--cyan);border-color:var(--cyan);}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;}}
 @media (forced-colors:active){.card,.panel-inner,header.top,.pill,button,.btn{border:2px solid CanvasText;}}
 </style>
@@ -146,17 +164,17 @@ input[type="text"],input[type="email"],textarea{
     </div>
     <nav class="nav-links" aria-label="AyeFire links">
       <a class="pill mint" href="/welcome">Sanctuary Front Door</a>
+      <a class="pill coral" href="/?tab=transparency" id="hdr-radar-pill">🛡 Transparency Radar (0)</a>
       <a class="pill gold" href="/?tab=phoenix">Phoenix Live Gateway</a>
       <a class="pill cyan" href="/?tab=gateway">Edge Cache &amp; Router</a>
       <a class="pill" href="http://127.0.0.1:8080/" target="_blank" rel="noopener">Phoenix Lab (:8080)</a>
-      <a class="pill" href="/api/gateway/status">Gateway JSON</a>
-      <a class="pill" href="/api/phoenix/status">Phoenix JSON</a>
     </nav>
   </header>
 
   <section class="tabs-shell">
     <div class="tablist" focusgroup="tablist nomemory" aria-label="AyeFire family care modules">
       <button type="button" id="tab-sanctuary" aria-selected="true" focusgroupstart>Sanctuary Library</button>
+      <button type="button" id="tab-transparency" aria-selected="false">Transparency Radar</button>
       <button type="button" id="tab-phoenix" aria-selected="false">Phoenix Audio (Live)</button>
       <button type="button" id="tab-gateway" aria-selected="false">Edge Cache &amp; Gateway</button>
       <button type="button" id="tab-kitchen" aria-selected="false">Alex’s Kitchen</button>
@@ -223,7 +241,53 @@ input[type="text"],input[type="email"],textarea{
         </div>
       </div>
 
-      <!-- TAB 1: ON-THE-FLY PHOENIX AUDIO GATEWAY & BLAKE3 MEDIA CACHE -->
+      <!-- TAB 1: LIVE TRANSPARENCY RADAR, BEHAVIORAL SURVEILLANCE DETECTOR & DEEPSEEK p/q EXPLAINER -->
+      <div role="tabpanel" id="panel-transparency" aria-labelledby="tab-transparency" hidden="until-found">
+        <div class="panel-inner">
+          <div class="row-item ok">
+            <strong>AyeFire Live Transparency Radar — Real-Time Behavioral Telemetry &amp; Local DeepSeek p/q Risk Advisor</strong>
+            <span class="muted">Watches structural timing &amp; packet patterns (zero cookies/passwords saved) to catch mouse-move micro-beacons, 1×1 tracking pixels, cross-site identity brokers, and silent uploads — with instant SSE toasts, optional desktop notifications, 1-click Beacon Path Silencing (keeps the site working!), and local DeepSeek p/q explanations.</span>
+          </div>
+
+          <div class="kpi-row">
+            <div class="kpi"><span>Sites Observed</span><strong class="cyan" id="rad-sites">0</strong></div>
+            <div class="kpi"><span>Surveillance Alerts</span><strong class="coral" id="rad-alerts">0</strong></div>
+            <div class="kpi"><span>Micro-Beacons / Pixels</span><strong class="gold" id="rad-beacons">0 / 0</strong></div>
+            <div class="kpi"><span>Silenced / Blocked</span><strong class="ok" id="rad-stopped">0 / 0</strong></div>
+          </div>
+
+          <div class="card">
+            <h2>
+              <span>Notification Console &amp; Active Shields</span>
+              <span class="pill ok" id="rad-sse-pill">SSE CONNECTING…</span>
+            </h2>
+            <div class="btn-row">
+              <button type="button" class="act primary" id="btn-rad-desktop-notif">Enable Desktop Notifications</button>
+              <button type="button" class="act" id="btn-rad-auto-silence">Auto-Silence Mouse/Pixel Beacons: OFF</button>
+              <button type="button" class="act" id="btn-rad-test">Send Test Notification</button>
+              <button type="button" class="act" id="btn-rad-refresh">Refresh Radar</button>
+              <span class="muted" id="rad-status-note" style="font-size:0.78rem"></span>
+            </div>
+            <div class="answer-box" id="rad-explain-box" style="display:none"></div>
+          </div>
+
+          <div class="grid-2">
+            <article class="card">
+              <h2><span>Live Behavioral Risk Alerts (Newest First)</span><span class="pill gold" id="rad-alert-pill">0 alerts</span></h2>
+              <div class="list" id="rad-alert-list"></div>
+            </article>
+
+            <article class="card">
+              <h2><span>Site Transparency Scoreboard (Trust p/q out of 20)</span><span class="pill cyan">CHATTY FIRST</span></h2>
+              <div class="list" id="rad-site-list"></div>
+              <h3><span>Active Silenced Beacon Paths &amp; Blocked Hosts</span><span class="pill ok">PROXY + DNS</span></h3>
+              <div class="list" id="rad-rules-list"></div>
+            </article>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: ON-THE-FLY PHOENIX AUDIO GATEWAY & BLAKE3 MEDIA CACHE -->
       <div role="tabpanel" id="panel-phoenix" aria-labelledby="tab-phoenix" hidden="until-found">
         <div class="panel-inner">
           <div class="row-item ok">
@@ -507,6 +571,7 @@ input[type="text"],input[type="email"],textarea{
     </div>
   </section>
 </main>
+<div class="toast-stack" id="ayefire-toast-stack" role="status" aria-live="polite" aria-label="AyeFire transparency notifications"></div>
 
 <script>
 (function(){
@@ -1105,20 +1170,215 @@ input[type="text"],input[type="email"],textarea{
   });
   document.getElementById("btn-gw-refresh").addEventListener("click",loadGatewayStatus);
 
-  // Honor ?tab=sanctuary|phoenix|gateway|kitchen|forms|brain from Host routing & /welcome cards
+  // --- LIVE TRANSPARENCY RADAR, SSE TOASTS & DEEPSEEK p/q EXPLAINER ---
+  let radarAutoSilence=false;
+  let desktopNotifAllowed=(typeof Notification!=="undefined" && Notification.permission==="granted");
+
+  function syncDesktopBtn(){
+    const b=document.getElementById("btn-rad-desktop-notif");
+    if(!b)return;
+    if(typeof Notification==="undefined"){
+      b.textContent="Desktop Notifications Unavailable";
+    }else if(Notification.permission==="granted"){
+      desktopNotifAllowed=true;
+      b.textContent="Desktop Notifications: ENABLED ✓";
+    }else if(Notification.permission==="denied"){
+      b.textContent="Desktop Notifications: Blocked in Browser";
+    }else{
+      b.textContent="Enable Desktop Notifications";
+    }
+  }
+
+  function showToast(alert){
+    const stack=document.getElementById("ayefire-toast-stack");
+    if(!stack)return;
+    const div=document.createElement("div");
+    const cls=alert.severity==="high"?"high":(alert.severity==="info"?"ok":"");
+    div.className="toast "+cls;
+    div.innerHTML=
+      '<div class="toast-head"><strong>['+esc(alert.kind)+'] '+esc(alert.title)+'</strong><button type="button" class="toast-close" aria-label="Dismiss">✕</button></div>'+
+      '<div class="muted">'+esc(alert.detail)+'</div>'+
+      '<div class="btn-row">'+
+        '<button type="button" class="act" data-toast-explain="'+esc(alert.host)+'">Ask DeepSeek p/q</button>'+
+        (alert.path_sample && alert.path_sample!=="/" ? '<button type="button" class="act" data-toast-silence="'+esc(alert.host)+'|'+esc(alert.path_sample)+'">Silence Path</button>' : '')+
+        (alert.host!=="radar.aye" ? '<button type="button" class="act" data-toast-block="'+esc(alert.host)+'">Block Host</button>' : '')+
+      '</div>';
+    div.querySelector(".toast-close").addEventListener("click",()=>div.remove());
+    const exBtn=div.querySelector("[data-toast-explain]");
+    if(exBtn)exBtn.addEventListener("click",()=>{
+      const tab=document.getElementById("tab-transparency");
+      if(tab)selectTab(tab,false);
+      explainHostWithDeepSeek(alert.host);
+    });
+    const silBtn=div.querySelector("[data-toast-silence]");
+    if(silBtn)silBtn.addEventListener("click",()=>{
+      const parts=silBtn.getAttribute("data-toast-silence").split("|");
+      silenceBeaconPath(parts[0],parts[1],true);
+      div.remove();
+    });
+    const blkBtn=div.querySelector("[data-toast-block]");
+    if(blkBtn)blkBtn.addEventListener("click",()=>{
+      blockRadarHost(alert.host,true);
+      div.remove();
+    });
+    stack.prepend(div);
+    while(stack.children.length>4)stack.lastElementChild.remove();
+    setTimeout(()=>{if(div.parentNode)div.remove();},14000);
+
+    if(desktopNotifAllowed && typeof Notification!=="undefined" && Notification.permission==="granted"){
+      try{
+        new Notification("AyeFire Radar: "+alert.title,{body:alert.detail,tag:alert.host+":"+alert.kind});
+      }catch(_e){}
+    }
+  }
+
+  async function explainHostWithDeepSeek(host){
+    const box=document.getElementById("rad-explain-box");
+    box.style.display="block";
+    box.textContent="Asking local DeepSeek p/q to analyze sanitized telemetry for "+host+"…";
+    try{
+      const r=await fetch("/api/transparency/explain",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({host})
+      });
+      const d=await r.json();
+      const tag=d.ai_available?("Local DeepSeek p/q ("+esc(d.model)+")"):"Deterministic Local Mechanism (DeepSeek resting)";
+      box.textContent="["+tag+"] "+host+"\n\n"+(d.explanation||"No response")+"\n\n--- Observed Local Evidence ---\n"+(d.evidence||"");
+    }catch(e){
+      box.textContent="Explain request failed: "+e;
+    }
+  }
+
+  async function blockRadarHost(host,block){
+    await fetch("/api/transparency/block",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({host,block})});
+    document.getElementById("rad-status-note").textContent=(block?"Blocked ":"Unblocked ")+host+" across Proxy (:8792) & Sovereign DNS (:5354).";
+    loadRadarStatus();
+  }
+
+  async function silenceBeaconPath(host,pathPrefix,enable){
+    await fetch("/api/transparency/silence-path",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({host,path_prefix:pathPrefix,enable})});
+    document.getElementById("rad-status-note").textContent=(enable?"Silenced ":"Unsilenced ")+host+pathPrefix+" (site keeps working; beacons drop locally as 204).";
+    loadRadarStatus();
+  }
+
+  function renderRadarStatus(rad){
+    radarAutoSilence=!!rad.auto_silence_beacons;
+    document.getElementById("rad-sites").textContent=String(rad.sites_observed||0);
+    document.getElementById("rad-alerts").textContent=String(rad.total_alerts||0);
+    document.getElementById("rad-beacons").textContent=String(rad.micro_beacons_detected||0)+" / "+String(rad.pixels_detected||0);
+    document.getElementById("rad-stopped").textContent=String(rad.beacons_silenced||0)+" / "+String(rad.hosts_blocked_hits||0);
+    document.getElementById("rad-alert-pill").textContent=String((rad.alerts||[]).length)+" shown";
+    document.getElementById("hdr-radar-pill").textContent="🛡 Transparency Radar ("+String(rad.total_alerts||0)+")";
+    document.getElementById("btn-rad-auto-silence").textContent="Auto-Silence Mouse/Pixel Beacons: "+(radarAutoSilence?"ON ✓":"OFF");
+
+    const alEl=document.getElementById("rad-alert-list");
+    const alerts=rad.alerts||[];
+    alEl.innerHTML=alerts.length?alerts.slice(0,18).map(a=>{
+      const cls=a.severity==="high"?"bad":(a.severity==="medium"?"warn":"ok");
+      return '<div class="row-item '+cls+'">'+
+        '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><strong>['+esc(a.kind)+'] '+esc(a.title)+'</strong><span class="pill gold">'+esc(a.rate_pq)+' · Trust '+String(a.trust_of_20)+'/20</span></div>'+
+        '<span class="muted">'+esc(a.detail)+'</span>'+
+        '<div class="btn-row">'+
+          '<button type="button" class="act primary" data-rad-explain="'+esc(a.host)+'">Explain with DeepSeek p/q</button>'+
+          (a.path_sample && a.path_sample!=="/" ? '<button type="button" class="act" data-rad-sil-h="'+esc(a.host)+'" data-rad-sil-p="'+esc(a.path_sample)+'">Silence Path Only</button>' : '')+
+          (a.host!=="radar.aye" ? '<button type="button" class="act" data-rad-blk="'+esc(a.host)+'">Block Host</button>' : '')+
+        '</div></div>';
+    }).join(""):'<div class="row-item ok"><strong>Quiet skies so far</strong><span class="muted">Enable Tier-3 Inspect on the Gateway tab and browse in Firefox — mouse-move beacons, 1×1 pixels, and identity brokers will appear here live!</span></div>';
+
+    for(const b of alEl.querySelectorAll("[data-rad-explain]"))b.addEventListener("click",()=>explainHostWithDeepSeek(b.getAttribute("data-rad-explain")));
+    for(const b of alEl.querySelectorAll("[data-rad-sil-h]"))b.addEventListener("click",()=>silenceBeaconPath(b.getAttribute("data-rad-sil-h"),b.getAttribute("data-rad-sil-p"),true));
+    for(const b of alEl.querySelectorAll("[data-rad-blk]"))b.addEventListener("click",()=>blockRadarHost(b.getAttribute("data-rad-blk"),true));
+
+    const sEl=document.getElementById("rad-site-list");
+    const sites=rad.sites||[];
+    sEl.innerHTML=sites.length?sites.slice(0,20).map(s=>{
+      const cls=s.trust_of_20<=8?"bad":(s.trust_of_20<=14?"warn":"ok");
+      const tp=s.third_party_hosts&&s.third_party_hosts.length?("<br><strong>3rd parties called ("+s.third_party_hosts.length+"):</strong> "+esc(s.third_party_hosts.slice(0,6).join(", "))):"";
+      const bp=s.sample_beacon_paths&&s.sample_beacon_paths.length?("<br><strong>Beacon paths:</strong> <code>"+esc(s.sample_beacon_paths.slice(0,3).join(" · "))+"</code>"):"";
+      const kn=s.known_tracker_note?("<br><span class='gold'>"+esc(s.known_tracker_note)+"</span>"):"";
+      return '<div class="row-item '+cls+'">'+
+        '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><strong>'+esc(s.host)+'</strong><span class="pill">'+String(s.trust_of_20)+'/20 · '+esc(s.verdict)+'</span></div>'+
+        '<span class="muted">Reqs: '+String(s.total_requests)+' · Micro-beacons: '+String(s.post_beacons)+' ('+esc(s.burst_rate_pq)+') · Pixels/204: '+String(s.pixel_or_204_beacons)+' · Silenced: '+String(s.silenced_count)+kn+tp+bp+'</span>'+
+        '<div class="btn-row">'+
+          '<button type="button" class="act" data-site-exp="'+esc(s.host)+'">Explain (DeepSeek p/q)</button>'+
+          '<button type="button" class="act" data-site-blk="'+esc(s.host)+'" data-site-isb="'+(s.is_blocked?"1":"0")+'">'+(s.is_blocked?"Unblock Host":"Block Host")+'</button>'+
+        '</div></div>';
+    }).join(""):'<div class="row-item"><strong>No inspected sites observed yet</strong></div>';
+
+    for(const b of sEl.querySelectorAll("[data-site-exp]"))b.addEventListener("click",()=>explainHostWithDeepSeek(b.getAttribute("data-site-exp")));
+    for(const b of sEl.querySelectorAll("[data-site-blk]"))b.addEventListener("click",()=>blockRadarHost(b.getAttribute("data-site-blk"),b.getAttribute("data-site-isb")!=="1"));
+
+    const rEl=document.getElementById("rad-rules-list");
+    const ruleRows=[];
+    for(const h of (rad.blocked_hosts||[])){
+      ruleRows.push('<div class="row-item bad"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong>[HOST BLOCKED] '+esc(h)+'</strong><button type="button" class="act" data-unblk="'+esc(h)+'">Unblock</button></div></div>');
+    }
+    for(const sp of (rad.silenced_paths||[])){
+      const parts=sp.split("|");
+      ruleRows.push('<div class="row-item warn"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong>[PATH SILENCED → 204] '+esc(parts[0]+parts[1])+'</strong><button type="button" class="act" data-unsil-h="'+esc(parts[0])+'" data-unsil-p="'+esc(parts[1])+'">Remove</button></div></div>');
+    }
+    rEl.innerHTML=ruleRows.length?ruleRows.join(""):'<div class="row-item"><strong>No custom host blocks or silenced paths yet</strong></div>';
+    for(const b of rEl.querySelectorAll("[data-unblk]"))b.addEventListener("click",()=>blockRadarHost(b.getAttribute("data-unblk"),false));
+    for(const b of rEl.querySelectorAll("[data-unsil-h]"))b.addEventListener("click",()=>silenceBeaconPath(b.getAttribute("data-unsil-h"),b.getAttribute("data-unsil-p"),false));
+  }
+
+  async function loadRadarStatus(){
+    try{
+      const r=await fetch("/api/transparency/status");
+      if(!r.ok)return;
+      const d=await r.json();
+      if(d.radar)renderRadarStatus(d.radar);
+    }catch(_e){}
+  }
+
+  function connectRadarSse(){
+    if(typeof EventSource==="undefined")return;
+    const pill=document.getElementById("rad-sse-pill");
+    const es=new EventSource("/api/transparency/events");
+    es.onopen=()=>{if(pill){pill.textContent="LIVE SSE STREAM ✓";pill.className="pill ok";}};
+    es.addEventListener("alert",(ev)=>{
+      try{
+        const alert=JSON.parse(ev.data);
+        showToast(alert);
+        loadRadarStatus();
+      }catch(_e){}
+    });
+    es.onerror=()=>{if(pill){pill.textContent="SSE RECONNECTING…";pill.className="pill gold";}};
+  }
+
+  document.getElementById("btn-rad-desktop-notif").addEventListener("click",async()=>{
+    if(typeof Notification==="undefined")return;
+    await Notification.requestPermission();
+    syncDesktopBtn();
+  });
+  document.getElementById("btn-rad-auto-silence").addEventListener("click",async()=>{
+    await fetch("/api/transparency/auto-silence",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!radarAutoSilence})});
+    loadRadarStatus();
+  });
+  document.getElementById("btn-rad-test").addEventListener("click",async()=>{
+    await fetch("/api/transparency/test-alert",{method:"POST"});
+  });
+  document.getElementById("btn-rad-refresh").addEventListener("click",loadRadarStatus);
+
+  // Honor ?tab=sanctuary|transparency|phoenix|gateway|kitchen|forms|brain from Host routing & /welcome cards
   const wantedTab=new URLSearchParams(window.location.search).get("tab");
   if(wantedTab){
     const target=document.getElementById("tab-"+wantedTab);
     if(target)selectTab(target,false);
   }
 
+  syncDesktopBtn();
   loadAll();
   loadLibraryStatus().then(runLibrarySearch);
   loadPhoenixStatus();
   loadPhoenixTracks();
   loadGatewayStatus();
+  loadRadarStatus();
+  connectRadarSse();
   setInterval(loadPhoenixStatus,4000);
   setInterval(loadGatewayStatus,4000);
+  setInterval(loadRadarStatus,4000);
 })();
 </script>
 </body>
@@ -1228,6 +1488,11 @@ footer{{text-align:center;font-size:0.8rem;color:var(--muted);}}
       <strong>Ask Local Tutor (DeepSeek p/q)</strong>
       <code>ask.aye</code>
       <p>Loopback sovereign AI tutor grounded strictly in cited local passages — honest provenance, zero cloud egress.</p>
+    </a>
+    <a class="door" href="/?tab=transparency">
+      <strong>Live Transparency Radar &amp; Alerts</strong>
+      <code>radar.aye · Local DeepSeek p/q Advisor</code>
+      <p>Catch mouse-move micro-beacons, 1×1 tracking pixels, and cross-site identity brokers live — silence beacons or ask local DeepSeek p/q.</p>
     </a>
     <a class="door gold" href="/?tab=phoenix">
       <strong>On-the-Fly Phoenix Audio Gateway</strong>

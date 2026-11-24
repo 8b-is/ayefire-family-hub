@@ -19,6 +19,7 @@
 
 use crate::edge_cache::EdgeCache;
 use crate::phoenix_gateway::{format_reduced_pq, PhoenixGateway, StreamOptions};
+use crate::transparency_radar::{extract_referer_host, TrafficObservation, TransparencyRadar};
 use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Bytes, Frame, Incoming};
 use hyper::header::{HeaderName, HeaderValue};
@@ -425,6 +426,7 @@ pub async fn serve_inspected_tls_tunnel(
     inspect: Arc<TlsInspectState>,
     edge_cache: Arc<EdgeCache>,
     phoenix: Arc<PhoenixGateway>,
+    radar: Arc<TransparencyRadar>,
 ) -> anyhow::Result<()> {
     let server_cfg = inspect.server_config_for_host(&host).await?;
     let acceptor = TlsAcceptor::from(server_cfg);
@@ -441,9 +443,11 @@ pub async fn serve_inspected_tls_tunnel(
         let insp_c = Arc::clone(&inspect);
         let cache_c = Arc::clone(&edge_cache);
         let phx_c = Arc::clone(&phoenix);
+        let rad_c = Arc::clone(&radar);
         async move {
             Ok::<_, std::convert::Infallible>(
-                handle_inspected_http_request(req, &host_c, port, insp_c, cache_c, phx_c).await,
+                handle_inspected_http_request(req, &host_c, port, insp_c, cache_c, phx_c, rad_c)
+                    .await,
             )
         }
     });
@@ -480,6 +484,7 @@ async fn handle_inspected_http_request(
     inspect: Arc<TlsInspectState>,
     edge_cache: Arc<EdgeCache>,
     phoenix: Arc<PhoenixGateway>,
+    radar: Arc<TransparencyRadar>,
 ) -> Response<BoxedBody> {
     inspect
         .https_requests_inspected
@@ -492,6 +497,39 @@ async fn handle_inspected_http_request(
         .map(|pq| pq.as_str())
         .unwrap_or("/");
     let path_only = req.uri().path().to_string();
+    let referer_host = req
+        .headers()
+        .get(hyper::header::REFERER)
+        .or_else(|| req.headers().get(hyper::header::ORIGIN))
+        .and_then(|v| v.to_str().ok())
+        .and_then(extract_referer_host);
+
+    // 0. Instant Beacon-Path Silencing (drops mouse-move / telemetry beacons locally with 204
+    //    so the parent site keeps working 100% normally without leaking behavioral packets!)
+    if radar
+        .should_silence_path(host, method.as_str(), &path_only)
+        .await
+    {
+        radar.record_silenced(host, &path_only).await;
+        inspect
+            .record_event(InspectEvent {
+                host: host.to_string(),
+                method: method.to_string(),
+                path_preview: truncate_path(&path_only, 60),
+                status: 204,
+                action: "BEACON-SILENCED".to_string(),
+                content_type: "telemetry/silenced".to_string(),
+                size_bytes: 0,
+                unix_secs: crate::pdf_forms::now_unix_secs(),
+            })
+            .await;
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header("X-AyeFire-Inspect", "TIER3-LOCAL")
+            .header("X-AyeFire-Silenced", "BEACON-DROPPED")
+            .body(full_body(Vec::new()))
+            .unwrap_or_else(|_| Response::new(full_body(Vec::new())));
+    }
     let full_url = if port == 443 {
         format!("https://{host}{path_and_query}")
     } else {
@@ -577,6 +615,7 @@ async fn handle_inspected_http_request(
         }
         up_req = up_req.header(name.as_str(), value.as_bytes());
     }
+    let req_bytes_len = req_bytes.len() as u64;
     if !req_bytes.is_empty() {
         up_req = up_req.body(req_bytes.to_vec());
     }
@@ -779,6 +818,19 @@ async fn handle_inspected_http_request(
         resp_builder = resp_builder.header("X-AyeFire-Cache", "PASS");
         "PASS"
     };
+
+    radar
+        .observe_request(TrafficObservation {
+            host: host.to_string(),
+            referer_host,
+            method: method.to_string(),
+            path_only: path_only.clone(),
+            status: status_u16,
+            req_bytes: req_bytes_len,
+            resp_bytes: resp_bytes.len() as u64,
+            content_type: content_type.clone(),
+        })
+        .await;
 
     inspect
         .record_event(InspectEvent {

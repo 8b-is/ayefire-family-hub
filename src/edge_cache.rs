@@ -16,6 +16,7 @@
 use crate::phoenix_gateway::{format_reduced_pq, PhoenixGateway};
 use crate::sanctuary_dns;
 use crate::tls_inspect::{is_privacy_sensitive_host, InspectEvent, TlsInspectState};
+use crate::transparency_radar::TransparencyRadar;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fs;
@@ -438,6 +439,7 @@ pub async fn spawn_http_cache_proxy(
     cache: Arc<EdgeCache>,
     inspect: Arc<TlsInspectState>,
     phoenix: Arc<PhoenixGateway>,
+    radar: Arc<TransparencyRadar>,
 ) -> anyhow::Result<()> {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), cache.proxy_port);
     let listener = TcpListener::bind(addr).await?;
@@ -454,8 +456,9 @@ pub async fn spawn_http_cache_proxy(
         let c = Arc::clone(&cache);
         let i = Arc::clone(&inspect);
         let p = Arc::clone(&phoenix);
+        let r = Arc::clone(&radar);
         tokio::spawn(async move {
-            let _ = handle_proxy_conn(stream, c, i, p).await;
+            let _ = handle_proxy_conn(stream, c, i, p, r).await;
         });
     }
 }
@@ -465,6 +468,7 @@ async fn handle_proxy_conn(
     cache: Arc<EdgeCache>,
     inspect: Arc<TlsInspectState>,
     phoenix: Arc<PhoenixGateway>,
+    radar: Arc<TransparencyRadar>,
 ) -> anyhow::Result<()> {
     let mut reader = BufReader::new(stream);
     let mut req_line = String::new();
@@ -512,25 +516,34 @@ async fn handle_proxy_conn(
             return Ok(());
         };
 
-        // 1. Telemetry / Ad / Ubiquiti phone-home sinkhole (Zero-MITM hostname block!)
-        if inspect.sinkhole_connect_enabled.load(Ordering::Relaxed)
-            && sanctuary_dns::is_telemetry_sinkholed(&host.to_ascii_lowercase())
+        // 1. Telemetry / Ad / Ubiquiti phone-home + Dynamic Radar Host Blocklist (Zero-MITM!)
+        let user_blocked = radar.is_host_blocked(&host).await;
+        if user_blocked
+            || (inspect.sinkhole_connect_enabled.load(Ordering::Relaxed)
+                && sanctuary_dns::is_telemetry_sinkholed(&host.to_ascii_lowercase()))
         {
             inspect.connect_blocked.fetch_add(1, Ordering::Relaxed);
+            if user_blocked {
+                radar.hosts_blocked_hits.fetch_add(1, Ordering::Relaxed);
+            }
             inspect
                 .record_event(InspectEvent {
                     host: host.clone(),
                     method: "CONNECT".to_string(),
                     path_preview: format!(":{port}"),
                     status: 403,
-                    action: "SINKHOLE-BLOCKED".to_string(),
+                    action: if user_blocked {
+                        "RADAR-BLOCKED".to_string()
+                    } else {
+                        "SINKHOLE-BLOCKED".to_string()
+                    },
                     content_type: "telemetry/blocked".to_string(),
                     size_bytes: 0,
                     unix_secs: crate::pdf_forms::now_unix_secs(),
                 })
                 .await;
             let _ = client_stream
-                .write_all(b"HTTP/1.1 403 Forbidden\r\nX-AyeFire-Block: Telemetry-Sinkhole\r\nConnection: close\r\n\r\n")
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nX-AyeFire-Block: Transparency-Radar\r\nConnection: close\r\n\r\n")
                 .await;
             return Ok(());
         }
@@ -551,6 +564,7 @@ async fn handle_proxy_conn(
                 inspect,
                 cache,
                 phoenix,
+                radar,
             )
             .await;
             return Ok(());

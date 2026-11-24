@@ -15,6 +15,7 @@ mod phoenix_gateway;
 mod sanctuary_dns;
 mod sanctuary_library;
 mod tls_inspect;
+mod transparency_radar;
 mod ui;
 
 use axum::{
@@ -22,14 +23,19 @@ use axum::{
     extract::{Multipart, Path as AxumPath, Query, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     middleware::{self, Next},
-    response::{Html, IntoResponse, Json, Redirect, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        Html, IntoResponse, Json, Redirect, Response,
+    },
     routing::{get, post},
     Router,
 };
+use futures::stream::Stream;
 use ipp_printer::FamilySharedState;
 use pdf_forms::{HouseholdFamilyProfile, PrintedFormJob};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -184,6 +190,9 @@ async fn index_handler(State(state): State<FamilySharedState>, headers: HeaderMa
             .into_response()
         }
         "music.aye" => Redirect::temporary("/?tab=phoenix").into_response(),
+        "radar.aye" | "transparency.aye" | "alerts.aye" => {
+            Redirect::temporary("/?tab=transparency").into_response()
+        }
         "router.aye" | "gateway.aye" | "cache.aye" => {
             Redirect::temporary("/?tab=gateway").into_response()
         }
@@ -1084,6 +1093,138 @@ struct InspectPolicyPayload {
     phoenix_rate: Option<u32>,
 }
 
+#[derive(Deserialize)]
+struct RadarBlockPayload {
+    host: String,
+    #[serde(default = "default_true")]
+    block: bool,
+}
+
+#[derive(Deserialize)]
+struct RadarSilencePathPayload {
+    host: String,
+    path_prefix: String,
+    #[serde(default = "default_true")]
+    enable: bool,
+}
+
+#[derive(Deserialize)]
+struct RadarAutoSilencePayload {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct RadarExplainPayload {
+    host: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+async fn transparency_status_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
+    let st = state.radar.status().await;
+    Json(serde_json::json!({ "ok": true, "radar": st }))
+}
+
+async fn transparency_events_sse_handler(
+    State(state): State<FamilySharedState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.radar.subscribe_alerts();
+    let stream = futures::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(alert) => {
+                    let payload =
+                        serde_json::to_string(&alert).unwrap_or_else(|_| "{}".to_string());
+                    let ev = Event::default().event("alert").data(payload);
+                    return Some((Ok::<Event, Infallible>(ev), rx));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+async fn transparency_block_handler(
+    State(state): State<FamilySharedState>,
+    Json(req): Json<RadarBlockPayload>,
+) -> impl IntoResponse {
+    let ok = state.radar.block_host(&req.host, req.block).await;
+    let st = state.radar.status().await;
+    Json(serde_json::json!({ "ok": ok, "radar": st }))
+}
+
+async fn transparency_silence_path_handler(
+    State(state): State<FamilySharedState>,
+    Json(req): Json<RadarSilencePathPayload>,
+) -> impl IntoResponse {
+    let ok = state
+        .radar
+        .silence_path(&req.host, &req.path_prefix, req.enable)
+        .await;
+    let st = state.radar.status().await;
+    Json(serde_json::json!({ "ok": ok, "radar": st }))
+}
+
+async fn transparency_auto_silence_handler(
+    State(state): State<FamilySharedState>,
+    Json(req): Json<RadarAutoSilencePayload>,
+) -> impl IntoResponse {
+    let enabled = state.radar.set_auto_silence(req.enabled).await;
+    let st = state.radar.status().await;
+    Json(serde_json::json!({ "ok": true, "auto_silence_beacons": enabled, "radar": st }))
+}
+
+async fn transparency_test_alert_handler(
+    State(state): State<FamilySharedState>,
+) -> impl IntoResponse {
+    let alert = state.radar.emit_test_alert().await;
+    Json(serde_json::json!({ "ok": true, "alert": alert }))
+}
+
+async fn transparency_explain_handler(
+    State(state): State<FamilySharedState>,
+    Json(req): Json<RadarExplainPayload>,
+) -> impl IntoResponse {
+    let (sanitized_summary, fallback) = state
+        .radar
+        .build_sanitized_explain_summary(&req.host)
+        .await;
+    let sys = "You are Aye, Hue's calm, honest local privacy advisor running on literal-loopback DeepSeek p/q inside AyeFire. Explain observed browser telemetry in 2-3 clear plain-English sentences. Distinguish normal site functionality from mouse-tracking, 1x1 pixels, or cross-site identity brokers without alarmism. Recommend whether to monitor, silence just the beacon path (keeps the site working!), or block the host.";
+    let prompt = format!(
+        "Sanitized local network observation (zero cookies, zero payloads):\n{sanitized_summary}\n\nExplain plainly what this host is doing and the smartest action for the user."
+    );
+    match deepseek_pq::generate_local_reply(
+        &state.llm_endpoint,
+        &state.llm_model,
+        sys,
+        &prompt,
+        220,
+    )
+    .await
+    {
+        Ok(reply) => Json(serde_json::json!({
+            "ok": true,
+            "ai_available": true,
+            "model": state.llm_model,
+            "host": req.host,
+            "explanation": reply,
+            "evidence": sanitized_summary,
+        })),
+        Err(err) => Json(serde_json::json!({
+            "ok": true,
+            "ai_available": false,
+            "ai_note": err,
+            "host": req.host,
+            "explanation": fallback,
+            "evidence": sanitized_summary,
+        })),
+    }
+}
+
 async fn gateway_ca_cert_handler(State(state): State<FamilySharedState>) -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -1289,7 +1430,12 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let merkle_short = &lib_st.merkle_root_blake3[..lib_st.merkle_root_blake3.len().min(16)];
-    let dns = sanctuary_dns::SanctuaryDnsConfig::from_env(lib_st.total_docs, merkle_short);
+    let radar = transparency_radar::TransparencyRadar::load_from_env();
+    let dns = sanctuary_dns::SanctuaryDnsConfig::from_env(
+        lib_st.total_docs,
+        merkle_short,
+        radar.shared_blocked_hosts(),
+    );
     let phoenix = phoenix_gateway::PhoenixGateway::load_from_env();
     let edge_cache = edge_cache::EdgeCache::load_from_env();
     let inspect = tls_inspect::TlsInspectState::load_or_create_from_env()?;
@@ -1310,6 +1456,7 @@ async fn main() -> anyhow::Result<()> {
         phoenix: phoenix.clone(),
         edge_cache: edge_cache.clone(),
         inspect: inspect.clone(),
+        radar: radar.clone(),
         http_port,
     };
 
@@ -1325,8 +1472,12 @@ async fn main() -> anyhow::Result<()> {
     let proxy_cache = edge_cache.clone();
     let proxy_inspect = inspect.clone();
     let proxy_phoenix = phoenix.clone();
+    let proxy_radar = radar.clone();
     tokio::spawn(async move {
-        if let Err(e) = edge_cache::spawn_http_cache_proxy(proxy_cache, proxy_inspect, proxy_phoenix).await {
+        if let Err(e) =
+            edge_cache::spawn_http_cache_proxy(proxy_cache, proxy_inspect, proxy_phoenix, proxy_radar)
+                .await
+        {
             eprintln!("[EDGE-PROXY] proxy exited: {e}");
         }
     });
@@ -1382,6 +1533,23 @@ async fn main() -> anyhow::Result<()> {
             "/api/gateway/inspect",
             get(gateway_inspect_get_handler).post(gateway_inspect_post_handler),
         )
+        // Live Transparency Radar, SSE Risk Notifications & Local DeepSeek p/q Risk Explainer
+        .route("/api/transparency/status", get(transparency_status_handler))
+        .route("/api/transparency/events", get(transparency_events_sse_handler))
+        .route("/api/transparency/block", post(transparency_block_handler))
+        .route(
+            "/api/transparency/silence-path",
+            post(transparency_silence_path_handler),
+        )
+        .route(
+            "/api/transparency/auto-silence",
+            post(transparency_auto_silence_handler),
+        )
+        .route(
+            "/api/transparency/test-alert",
+            post(transparency_test_alert_handler),
+        )
+        .route("/api/transparency/explain", post(transparency_explain_handler))
         .route("/api/cache/fetch", get(edge_cache_fetch_handler))
         .route("/api/cache/warm", post(edge_cache_warm_handler))
         .route("/api/cache/objects", get(edge_cache_objects_handler))

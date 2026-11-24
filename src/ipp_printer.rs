@@ -12,6 +12,7 @@ use crate::phoenix_gateway::PhoenixGateway;
 use crate::sanctuary_dns::SanctuaryDnsConfig;
 use crate::sanctuary_library::SanctuaryLibrary;
 use crate::tls_inspect::TlsInspectState;
+use crate::transparency_radar::TransparencyRadar;
 use ipp_ngest::model::{PageOrientation, Resolution};
 use ipp_ngest::server::{serve_http, wrap_as_http_service};
 use ipp_ngest::service::simple::{
@@ -47,6 +48,7 @@ pub struct FamilySharedState {
     pub phoenix: Arc<PhoenixGateway>,
     pub edge_cache: Arc<EdgeCache>,
     pub inspect: Arc<TlsInspectState>,
+    pub radar: Arc<TransparencyRadar>,
     pub http_port: u16,
 }
 

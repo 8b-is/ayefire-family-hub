@@ -17,7 +17,7 @@
 //! - `airgap`: Never sends any upstream UDP packet; resolves `.aye` + captive probes locally,
 //!   returns `NXDOMAIN` for external domains.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -92,11 +92,16 @@ pub struct SanctuaryDnsConfig {
     pub upstream_forwards: Arc<AtomicU64>,
     pub sinkhole_blocked: Arc<AtomicU64>,
     pub wan_dns_reachable: Arc<AtomicBool>,
+    pub dynamic_blocked_hosts: Arc<RwLock<BTreeSet<String>>>,
     cache: Arc<RwLock<HashMap<(String, u16), CachedDnsWire>>>,
 }
 
 impl SanctuaryDnsConfig {
-    pub fn from_env(doc_count: usize, merkle_short: &str) -> Self {
+    pub fn from_env(
+        doc_count: usize,
+        merkle_short: &str,
+        dynamic_blocked_hosts: Arc<RwLock<BTreeSet<String>>>,
+    ) -> Self {
         let port = std::env::var("AYEFIRE_DNS_PORT")
             .ok()
             .and_then(|s| s.parse::<u16>().ok())
@@ -137,6 +142,7 @@ impl SanctuaryDnsConfig {
             upstream_forwards: Arc::new(AtomicU64::new(0)),
             sinkhole_blocked: Arc::new(AtomicU64::new(0)),
             wan_dns_reachable: Arc::new(AtomicBool::new(true)),
+            dynamic_blocked_hosts,
             cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -231,10 +237,16 @@ pub async fn resolve_dns_packet(query: &[u8], cfg: &SanctuaryDnsConfig) -> Optio
         return Some(build_authoritative_reply(query, &parsed, cfg, cfg.lan_ipv4, true));
     }
 
-    // 2. Telemetry / ad / UniFi phone-home sinkhole (when enabled)
+    // 2. Telemetry / ad / UniFi phone-home + user dynamic Radar blocklist sinkhole
+    let dynamic_blocked = {
+        let g = cfg.dynamic_blocked_hosts.read().await;
+        let qn = parsed.qname_lower.trim_end_matches('.');
+        g.iter()
+            .any(|b| qn == b || qn.ends_with(&format!(".{b}")))
+    };
     if parsed.qclass == QCLASS_IN
-        && cfg.sinkhole_enabled
-        && is_telemetry_sinkholed(&parsed.qname_lower)
+        && (dynamic_blocked
+            || (cfg.sinkhole_enabled && is_telemetry_sinkholed(&parsed.qname_lower)))
     {
         cfg.sinkhole_blocked.fetch_add(1, Ordering::Relaxed);
         return Some(build_sinkhole_reply(query, &parsed));
@@ -580,6 +592,7 @@ mod tests {
             upstream_forwards: Arc::new(AtomicU64::new(0)),
             sinkhole_blocked: Arc::new(AtomicU64::new(0)),
             wan_dns_reachable: Arc::new(AtomicBool::new(true)),
+            dynamic_blocked_hosts: Arc::new(RwLock::new(BTreeSet::new())),
             cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
